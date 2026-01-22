@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { dashboardApi, manufacturingApi } from '../../lib/api';
-import { useWebSocket } from '../../contexts/WebSocketContext';
-import { useCompany } from '../../contexts/CompanyContext';
-import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
-import { Button } from '../../components/ui/button';
-import { Badge } from '../../components/ui/badge';
+import { dashboardApi, manufacturingApi } from '../lib/api';
+import { useWebSocket } from '../contexts/WebSocketContext';
+import { useCompany } from '../contexts/CompanyContext';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Badge } from '../components/ui/badge';
 import { 
   FlaskConical, 
   Boxes, 
@@ -16,7 +16,7 @@ import {
   Clock,
   RefreshCw
 } from 'lucide-react';
-import { cn, formatNumber, formatDate, getStatusColor } from '../../lib/utils';
+import { cn, formatNumber, formatDate, getStatusColor } from '../lib/utils';
 
 const KPICard = ({ title, value, subtitle, icon: Icon, trend, color = '#0F5132' }) => (
   <Card className="kpi-card card-hover">
