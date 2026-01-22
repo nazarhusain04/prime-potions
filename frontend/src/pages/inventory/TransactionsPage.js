@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { inventoryApi } from '../../lib/api';
-import { Card, CardContent, CardHeader } from '../ui/card';
-import { Button } from '../ui/button';
-import { Input } from '../ui/input';
-import { Badge } from '../ui/badge';
+import { Card, CardContent, CardHeader } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Badge } from '../../components/ui/badge';
 import {
   Table,
   TableBody,
@@ -11,14 +11,14 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '../ui/table';
+} from '../../components/ui/table';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../ui/select';
+} from '../../components/ui/select';
 import { toast } from 'sonner';
 import { Search, FileText, RefreshCw } from 'lucide-react';
 import { cn, formatNumber, formatDate } from '../../lib/utils';

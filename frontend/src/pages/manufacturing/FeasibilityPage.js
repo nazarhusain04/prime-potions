@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { manufacturingApi, masterApi } from '../../lib/api';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Badge } from '../../components/ui/badge';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../ui/select';
+} from '../../components/ui/select';
 import { toast } from 'sonner';
 import { Calculator, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
 import { formatNumber } from '../../lib/utils';

@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { usersApi } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
-import { Card, CardContent, CardHeader } from '../ui/card';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
+import { Card, CardContent, CardHeader } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Badge } from '../../components/ui/badge';
 import {
   Table,
   TableBody,
@@ -11,7 +11,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '../ui/table';
+} from '../../components/ui/table';
 import {
   Dialog,
   DialogContent,
@@ -19,16 +19,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '../ui/dialog';
+} from '../../components/ui/dialog';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../ui/select';
-import { Switch } from '../ui/switch';
-import { Label } from '../ui/label';
+} from '../../components/ui/select';
+import { Switch } from '../../components/ui/switch';
+import { Label } from '../../components/ui/label';
 import { toast } from 'sonner';
 import { Users, Edit, Loader2 } from 'lucide-react';
 import { cn, formatDate, getRoleColor } from '../../lib/utils';

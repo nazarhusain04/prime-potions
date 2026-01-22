@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { manufacturingApi, masterApi, inventoryApi } from '../../lib/api';
 import { useWebSocket } from '../../contexts/WebSocketContext';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { Button } from '../ui/button';
-import { Input } from '../ui/input';
-import { Label } from '../ui/label';
-import { Badge } from '../ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
+import { Badge } from '../../components/ui/badge';
 import {
   Table,
   TableBody,
@@ -13,7 +13,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '../ui/table';
+} from '../../components/ui/table';
 import {
   Dialog,
   DialogContent,
@@ -22,14 +22,14 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '../ui/dialog';
+} from '../../components/ui/dialog';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../ui/select';
+} from '../../components/ui/select';
 import { toast } from 'sonner';
 import { Plus, Factory, Loader2, Play, CheckCircle, AlertTriangle, Shield } from 'lucide-react';
 import { cn, formatNumber, formatDate, getStatusColor } from '../../lib/utils';

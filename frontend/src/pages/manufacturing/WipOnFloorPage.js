@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { manufacturingApi } from '../../lib/api';
 import { useWebSocket } from '../../contexts/WebSocketContext';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Badge } from '../../components/ui/badge';
 import { toast } from 'sonner';
 import { Factory, RefreshCw } from 'lucide-react';
 import { cn, formatNumber, getStatusColor } from '../../lib/utils';
