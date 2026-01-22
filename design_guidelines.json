@@ -1,0 +1,138 @@
+{
+  "brand_identity": {
+    "name": "Prime Potions ERP",
+    "archetype": "The Alchemist's Ledger",
+    "core_values": ["Precision", "Clarity", "Craft", "Flow"],
+    "emotional_tone": "Scientific, Industrial, slightly Mystical (subtle)",
+    "theme_strategy": "Swiss High-Contrast Base with Jewel-Tone Accents"
+  },
+  "typography": {
+    "headings": {
+      "family": "Chivo, sans-serif",
+      "weights": ["Light (300)", "Bold (700)"],
+      "usage": "All page titles, section headers, and KPI values. Use tight tracking (-0.02em).",
+      "import_url": "https://fonts.googleapis.com/css2?family=Chivo:wght@300;400;700;900&display=swap"
+    },
+    "body": {
+      "family": "IBM Plex Sans, sans-serif",
+      "weights": ["Regular (400)", "Medium (500)", "SemiBold (600)"],
+      "usage": "Table data, form labels, general text. Optimized for legibility at small sizes.",
+      "import_url": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&display=swap"
+    },
+    "mono": {
+      "family": "JetBrains Mono, monospace",
+      "usage": "Batch numbers, SKUs, IDs, code snippets.",
+      "import_url": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+    }
+  },
+  "colors": {
+    "palette": {
+      "primary": {
+        "name": "Alchemist Emerald",
+        "hex": "#0F5132",
+        "tailwind": "bg-[#0F5132] text-white",
+        "usage": "Primary actions, active states, branding elements."
+      },
+      "secondary": {
+        "name": "Industrial Slate",
+        "hex": "#334155",
+        "tailwind": "bg-slate-700",
+        "usage": "Secondary buttons, navigation backgrounds."
+      },
+      "accent": {
+        "name": "Potion Amber",
+        "hex": "#D97706",
+        "tailwind": "text-amber-600 bg-amber-100",
+        "usage": "Warnings, highlights, 'In Progress' states."
+      },
+      "background": {
+        "main": "#F8FAFC",
+        "card": "#FFFFFF",
+        "sidebar": "#F1F5F9"
+      },
+      "text": {
+        "primary": "#0F172A",
+        "secondary": "#64748B",
+        "muted": "#94A3B8"
+      },
+      "status": {
+        "success": "#10B981",
+        "error": "#EF4444",
+        "warning": "#F59E0B",
+        "info": "#3B82F6"
+      }
+    },
+    "gradients": {
+      "forbidden": "No full-screen gradients.",
+      "allowed": "Subtle 'glass' gradients on sticky headers only."
+    }
+  },
+  "layout_strategy": {
+    "grid_system": "Bento Grid Mode B (High Density)",
+    "spacing": {
+      "container_padding": "p-6 md:p-8",
+      "gap": "gap-4 md:gap-6",
+      "internal_padding": "p-4"
+    },
+    "containers": {
+      "style": "Cardless or Sharp Edges",
+      "border_radius": "rounded-sm (2px) or rounded-md (4px)",
+      "border": "1px solid #E2E8F0 (slate-200)"
+    }
+  },
+  "components": {
+    "buttons": {
+      "style": "Sharp or slightly rounded (rounded-md). No pill shapes.",
+      "primary": "bg-[#0F5132] hover:bg-[#0B3D25] text-white shadow-sm",
+      "secondary": "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+    },
+    "cards": {
+      "style": "Flat, 1px border, no shadow by default. Hover: shadow-md transition-all.",
+      "header": "Border-b border-slate-100 p-4",
+      "content": "p-4"
+    },
+    "tables": {
+      "style": "Dense, high information density.",
+      "header": "bg-slate-50 text-xs uppercase tracking-wider font-semibold text-slate-500",
+      "row": "border-b border-slate-100 hover:bg-slate-50/50 transition-colors",
+      "cell": "py-2 px-4 text-sm"
+    },
+    "inputs": {
+      "style": "bg-white border-slate-200 focus:border-[#0F5132] focus:ring-1 focus:ring-[#0F5132] rounded-md"
+    }
+  },
+  "visual_enhancers": {
+    "glassmorphism": {
+      "usage": "Sticky headers, modal overlays.",
+      "classes": "bg-white/80 backdrop-blur-md border-b border-white/20"
+    },
+    "micro_interactions": {
+      "hover": "translate-y-[-1px] duration-200",
+      "active": "scale-[0.98] duration-100"
+    },
+    "textures": {
+      "usage": "Subtle noise overlay on sidebar or login background to reduce digital flatness."
+    }
+  },
+  "image_assets": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1580281845022-233f93de0671?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjV8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBwaGFybWFjZXV0aWNhbCUyMG1hbnVmYWN0dXJpbmclMjBsYWJvcmF0b3J5fGVufDB8fHx8MTc2OTA2Mjk0Nnww&ixlib=rb-4.1.0&q=85",
+      "alt": "Alchemist filling potions",
+      "usage": "Full height split screen on login page."
+    },
+    "dashboard_widgets": {
+      "inventory_preview": "https://images.unsplash.com/photo-1627915589334-14a3c3e3a741?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2OTV8MHwxfHNlYXJjaHwyfHx3YXJlaG91c2UlMjBpbnZlbnRvcnklMjBzaGVsdmVzJTIwY2xlYW58ZW58MHx8fHwxNzY5MDYyOTQ4fDA&ixlib=rb-4.1.0&q=85",
+      "lab_context": "https://images.pexels.com/photos/11589213/pexels-photo-11589213.jpeg"
+    }
+  },
+  "universal_guidelines": [
+    "Do not use 'Inter' for headings.",
+    "Do not use Teal (#1B93A4) for main UI elements.",
+    "Always use 'data-testid' on interactive elements.",
+    "Use 'sonner' for toasts.",
+    "Use 'lucide-react' for icons.",
+    "Ensure 3:1 contrast for large text, 4.5:1 for normal text.",
+    "Mobile-first responsive design is mandatory."
+  ],
+  "instructions_to_main_agent": "You are building the Prime Potions ERP. Follow this design system strictly. Use the provided colors and fonts. Implement the 'Bento Grid Mode B' for the dashboard. Use the provided images for the login and dashboard sections. Ensure all components are accessible and responsive."
+}
