@@ -1909,6 +1909,625 @@ async def seed_demo_data():
         "recipe": "Healing Elixir Recipe v1"
     }
 
+# ============ EXCEL SYNC ROUTES ============
+
+from excel_services import ExcelService, ImportPreviewService
+
+# Pydantic models for Excel operations
+class ColumnMapping(BaseModel):
+    source_column: str
+    target_field: str
+
+class MappingConfig(BaseModel):
+    name: str
+    mapping_type: str  # raw_material, packaging, batching
+    sheet_name: str
+    mappings: Dict[str, str]
+
+class ImportJobCreate(BaseModel):
+    mapping_config_id: Optional[str] = None
+    sheet_name: str
+    field_mappings: Dict[str, str]
+
+@excel_router.post("/analyze")
+async def analyze_excel_file(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["Admin", "Warehouse", "Production"]))
+):
+    """Analyze an uploaded Excel file and return its structure"""
+    content = await file.read()
+    analysis = ExcelService.analyze_workbook(content)
+    return {
+        "filename": file.filename,
+        "analysis": analysis
+    }
+
+@excel_router.post("/suggest-mappings")
+async def suggest_field_mappings(
+    headers: List[str],
+    mapping_type: str = "raw_material",
+    user: dict = Depends(get_current_user)
+):
+    """Suggest field mappings for given column headers"""
+    suggestions = ExcelService.suggest_mappings(headers, mapping_type)
+    return {"suggestions": suggestions}
+
+@excel_router.post("/mapping-configs")
+async def save_mapping_config(
+    config: MappingConfig,
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """Save a column mapping configuration"""
+    config_doc = {
+        "id": generate_id(),
+        "name": config.name,
+        "mapping_type": config.mapping_type,
+        "sheet_name": config.sheet_name,
+        "mappings": config.mappings,
+        "created_at": get_timestamp(),
+        "created_by": user["id"]
+    }
+    await db.excel_mapping_configs.insert_one(config_doc)
+    return {"id": config_doc["id"], "message": "Mapping config saved"}
+
+@excel_router.get("/mapping-configs")
+async def list_mapping_configs(user: dict = Depends(get_current_user)):
+    """List all saved mapping configurations"""
+    configs = await db.excel_mapping_configs.find({}, {"_id": 0}).to_list(100)
+    return configs
+
+@excel_router.post("/preview-import")
+async def preview_import(
+    file: UploadFile = File(...),
+    sheet_name: str = Query(...),
+    mapping_type: str = Query("raw_material"),
+    user: dict = Depends(require_roles(["Admin", "Warehouse"]))
+):
+    """Preview what changes would be made by importing an Excel file"""
+    content = await file.read()
+    
+    # Analyze and get suggested mappings
+    analysis = ExcelService.analyze_workbook(content)
+    sheet_info = next((s for s in analysis["sheets"] if s["name"] == sheet_name), None)
+    
+    if not sheet_info:
+        raise HTTPException(status_code=400, detail=f"Sheet '{sheet_name}' not found")
+    
+    # Get suggested mappings
+    mappings = ExcelService.suggest_mappings(sheet_info["headers"], mapping_type)
+    
+    # Parse records
+    records = ExcelService.parse_excel_to_records(content, sheet_name, mappings)
+    
+    # Get existing items for comparison
+    if mapping_type == "raw_material":
+        existing_cursor = db.raw_materials.find({}, {"_id": 0})
+        key_field = "sku" if "sku" in mappings.values() else "item_code"
+    elif mapping_type == "packaging":
+        existing_cursor = db.packaging_materials.find({}, {"_id": 0})
+        key_field = "sku" if "sku" in mappings.values() else "item_code"
+    else:
+        existing_cursor = db.raw_materials.find({}, {"_id": 0})
+        key_field = "item_code"
+    
+    existing_items = {item.get(key_field, item.get("sku", "")): item async for item in existing_cursor}
+    
+    # Generate preview
+    preview = await ImportPreviewService.generate_preview(records, existing_items, key_field)
+    
+    return {
+        "sheet_name": sheet_name,
+        "mappings_used": mappings,
+        "preview": preview
+    }
+
+@excel_router.post("/apply-import")
+async def apply_import(
+    file: UploadFile = File(...),
+    sheet_name: str = Query(...),
+    mapping_type: str = Query("raw_material"),
+    field_mappings: str = Query(...),  # JSON string
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """Apply an Excel import to create/update records"""
+    content = await file.read()
+    mappings = json.loads(field_mappings)
+    
+    records = ExcelService.parse_excel_to_records(content, sheet_name, mappings)
+    
+    results = {"created": 0, "updated": 0, "errors": []}
+    
+    collection = db.raw_materials if mapping_type == "raw_material" else db.packaging_materials
+    key_field = "item_code"
+    
+    for record in records:
+        try:
+            # Clean record
+            clean_record = {k: v for k, v in record.items() if not k.startswith("_") and v is not None}
+            
+            if not clean_record.get(key_field):
+                results["errors"].append(f"Missing {key_field}")
+                continue
+            
+            # Check if exists
+            existing = await collection.find_one({key_field: clean_record[key_field]})
+            
+            if existing:
+                # Update
+                await collection.update_one(
+                    {key_field: clean_record[key_field]},
+                    {"$set": clean_record}
+                )
+                results["updated"] += 1
+            else:
+                # Create
+                clean_record["id"] = generate_id()
+                clean_record["is_active"] = True
+                clean_record["created_at"] = get_timestamp()
+                
+                # Map item_code to sku if needed
+                if "sku" not in clean_record and "item_code" in clean_record:
+                    clean_record["sku"] = clean_record["item_code"]
+                
+                await collection.insert_one(clean_record)
+                results["created"] += 1
+        except Exception as e:
+            results["errors"].append(str(e))
+    
+    await create_audit_log(user["id"], "import", mapping_type, "bulk", results)
+    
+    return results
+
+@excel_router.get("/download-template/{template_type}")
+async def download_template(template_type: str, user: dict = Depends(get_current_user)):
+    """Download an Excel template for data import"""
+    valid_types = ["raw_materials", "packaging", "inventory_receipt"]
+    if template_type not in valid_types:
+        raise HTTPException(status_code=400, detail=f"Invalid template type. Valid: {valid_types}")
+    
+    content = ExcelService.generate_master_data_template(template_type)
+    
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={template_type}_template.xlsx"}
+    )
+
+# ============ BATCHING WORKSPACE ROUTES ============
+
+class BatchingWorkspaceCreate(BaseModel):
+    formula_id: Optional[str] = None
+    formula_name: str
+    planned_qty: float
+    batch_unit: str = "KG"
+    target_location_id: str
+    notes: Optional[str] = ""
+
+class BatchingSheetUpload(BaseModel):
+    batch_id: str
+    actual_batch_size: float
+    ingredients_consumed: List[Dict[str, Any]]
+    lot_splits: Optional[List[Dict[str, Any]]] = []
+
+@batching_router.get("/workspace")
+async def list_batching_workspaces(
+    status: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """List all batching workspace entries"""
+    query = {}
+    if status:
+        query["status"] = status
+    
+    batches = await db.batching_workspace.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return batches
+
+@batching_router.post("/workspace")
+async def create_batching_workspace(
+    data: BatchingWorkspaceCreate,
+    user: dict = Depends(require_roles(["Admin", "Production"]))
+):
+    """Create a new batching workspace entry"""
+    batch_code = await generate_lot_number("BATCH")
+    
+    # Get formula ingredients if formula exists
+    ingredients = []
+    if data.formula_id:
+        formula = await db.formulas.find_one({"id": data.formula_id}, {"_id": 0})
+        if formula:
+            lines = await db.formula_lines.find({"formula_id": data.formula_id}, {"_id": 0}).to_list(100)
+            for line in lines:
+                rm = await db.raw_materials.find_one({"sku": line.get("raw_material_sku")}, {"_id": 0})
+                ingredients.append({
+                    "sku": line.get("raw_material_sku"),
+                    "name": rm.get("name") if rm else line.get("raw_material_sku"),
+                    "phase": line.get("phase", ""),
+                    "percent": line.get("percent", 0),
+                    "planned_qty": (line.get("percent", 0) / 100) * data.planned_qty,
+                    "uom": line.get("uom", "KG"),
+                    "notes": line.get("notes", "")
+                })
+    
+    workspace = {
+        "id": generate_id(),
+        "batch_code": batch_code,
+        "formula_id": data.formula_id,
+        "formula_name": data.formula_name,
+        "planned_qty": data.planned_qty,
+        "actual_qty": None,
+        "batch_unit": data.batch_unit,
+        "target_location_id": data.target_location_id,
+        "status": "Planned",
+        "notes": data.notes or "",
+        "ingredients": ingredients,
+        "created_at": get_timestamp(),
+        "created_by": user["id"],
+        "completed_at": None
+    }
+    
+    await db.batching_workspace.insert_one(workspace)
+    await broadcast_update("batch.updated", {"batch_code": batch_code, "status": "Planned"})
+    
+    return workspace
+
+@batching_router.get("/workspace/{batch_id}")
+async def get_batching_workspace(batch_id: str, user: dict = Depends(get_current_user)):
+    """Get a specific batching workspace entry"""
+    workspace = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Batching workspace not found")
+    return workspace
+
+@batching_router.get("/workspace/{batch_id}/download-sheet")
+async def download_batching_sheet(batch_id: str, user: dict = Depends(get_current_user)):
+    """Download the batching Excel sheet for a workspace entry"""
+    workspace = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Batching workspace not found")
+    
+    # Get current inventory snapshot for raw materials
+    inventory_snapshot = []
+    stock_cursor = db.stock_snapshots.find(
+        {"item_type": "raw_material", "quantity_available": {"$gt": 0}},
+        {"_id": 0}
+    )
+    async for stock in stock_cursor:
+        # Get material info
+        rm = await db.raw_materials.find_one({"id": stock.get("item_id")}, {"_id": 0})
+        if rm:
+            inventory_snapshot.append({
+                "sku": rm.get("sku", ""),
+                "name": rm.get("name", ""),
+                "lot_number": stock.get("lot_number", ""),
+                "location": stock.get("location_id", ""),
+                "quantity_available": stock.get("quantity_available", 0),
+                "uom": rm.get("unit_of_measure", ""),
+                "status": stock.get("status", ""),
+                "expiry_date": ""
+            })
+    
+    # Generate batching sheet
+    batch_info = {
+        "batch_id": workspace["id"],
+        "batch_code": workspace["batch_code"],
+        "formula_name": workspace["formula_name"],
+        "planned_qty": workspace["planned_qty"],
+        "batch_unit": workspace["batch_unit"],
+        "planned_start": workspace["created_at"],
+        "notes": workspace.get("notes", "")
+    }
+    
+    ingredients = workspace.get("ingredients", [])
+    
+    content = ExcelService.generate_batching_template(batch_info, ingredients, inventory_snapshot)
+    
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=batching_{workspace['batch_code']}.xlsx"}
+    )
+
+@batching_router.post("/workspace/{batch_id}/upload-sheet")
+async def upload_batching_sheet(
+    batch_id: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["Admin", "Production"]))
+):
+    """Upload a completed batching sheet to record consumption"""
+    workspace = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Batching workspace not found")
+    
+    content = await file.read()
+    parsed = ExcelService.parse_batching_sheet(content)
+    
+    # Validate
+    if parsed["validation_errors"]:
+        raise HTTPException(status_code=400, detail={"errors": parsed["validation_errors"]})
+    
+    # Get actual batch size
+    actual_batch_size = parsed["batch_header"].get("actual_batch_size")
+    if not actual_batch_size:
+        raise HTTPException(status_code=400, detail="Missing actual_batch_size in BatchHeader")
+    
+    # Process consumptions
+    consumptions_created = []
+    transactions_created = []
+    
+    for ing in parsed["ingredients"]:
+        if not ing.get("actual_qty") or ing.get("actual_qty") <= 0:
+            continue
+        
+        # Get material
+        rm = await db.raw_materials.find_one({"sku": ing.get("raw_material_sku")}, {"_id": 0})
+        if not rm:
+            parsed["warnings"].append(f"Material not found: {ing.get('raw_material_sku')}")
+            continue
+        
+        lot_code = ing.get("lot_code_used", "")
+        actual_qty = float(ing["actual_qty"])
+        
+        # Create inventory transaction (issue)
+        transaction = {
+            "id": generate_id(),
+            "item_id": rm["id"],
+            "item_type": "raw_material",
+            "lot_number": lot_code,
+            "location_id": workspace["target_location_id"],
+            "transaction_type": "issue",
+            "quantity": -actual_qty,
+            "unit_of_measure": rm.get("unit_of_measure", "KG"),
+            "reference_type": "batching_workspace",
+            "reference_id": batch_id,
+            "status": "Available",
+            "notes": f"Batching consumption for {workspace['batch_code']}",
+            "created_at": get_timestamp(),
+            "created_by": user["id"]
+        }
+        await db.inventory_transactions.insert_one(transaction)
+        transactions_created.append(transaction["id"])
+        
+        # Update stock snapshot
+        await update_stock_snapshot(rm["id"], "raw_material", lot_code, workspace["target_location_id"])
+        
+        # Record consumption
+        consumption = {
+            "id": generate_id(),
+            "batch_id": batch_id,
+            "material_id": rm["id"],
+            "material_sku": ing.get("raw_material_sku"),
+            "lot_number": lot_code,
+            "planned_qty": ing.get("planned_qty", 0),
+            "actual_qty": actual_qty,
+            "variance": actual_qty - float(ing.get("planned_qty", 0)),
+            "created_at": get_timestamp()
+        }
+        await db.batching_consumptions.insert_one(consumption)
+        consumptions_created.append(consumption["id"])
+    
+    # Process lot splits if any
+    for split in parsed.get("lot_splits", []):
+        if not split.get("qty_used") or split.get("qty_used") <= 0:
+            continue
+        
+        rm = await db.raw_materials.find_one({"sku": split.get("raw_material_sku")}, {"_id": 0})
+        if rm:
+            transaction = {
+                "id": generate_id(),
+                "item_id": rm["id"],
+                "item_type": "raw_material",
+                "lot_number": split.get("lot_code", ""),
+                "location_id": workspace["target_location_id"],
+                "transaction_type": "issue",
+                "quantity": -float(split["qty_used"]),
+                "unit_of_measure": rm.get("unit_of_measure", "KG"),
+                "reference_type": "batching_workspace",
+                "reference_id": batch_id,
+                "status": "Available",
+                "notes": f"Lot split for {workspace['batch_code']}",
+                "created_at": get_timestamp(),
+                "created_by": user["id"]
+            }
+            await db.inventory_transactions.insert_one(transaction)
+            await update_stock_snapshot(rm["id"], "raw_material", split.get("lot_code", ""), workspace["target_location_id"])
+    
+    # Create WIP production
+    wip_lot_number = await generate_lot_number("WIP")
+    
+    # Get product if formula links to one
+    product_id = None
+    if workspace.get("formula_id"):
+        formula = await db.formulas.find_one({"id": workspace["formula_id"]}, {"_id": 0})
+        product_id = formula.get("product_id") if formula else None
+    
+    wip_transaction = {
+        "id": generate_id(),
+        "item_id": product_id or workspace["id"],
+        "item_type": "wip_batch",
+        "lot_number": wip_lot_number,
+        "location_id": workspace["target_location_id"],
+        "transaction_type": "produce",
+        "quantity": float(actual_batch_size),
+        "unit_of_measure": workspace["batch_unit"],
+        "reference_type": "batching_workspace",
+        "reference_id": batch_id,
+        "status": "Available",
+        "notes": f"WIP produced from {workspace['batch_code']}",
+        "created_at": get_timestamp(),
+        "created_by": user["id"]
+    }
+    await db.inventory_transactions.insert_one(wip_transaction)
+    await update_stock_snapshot(product_id or workspace["id"], "wip_batch", wip_lot_number, workspace["target_location_id"])
+    
+    # Update workspace
+    await db.batching_workspace.update_one(
+        {"id": batch_id},
+        {"$set": {
+            "status": "Completed",
+            "actual_qty": float(actual_batch_size),
+            "wip_lot_number": wip_lot_number,
+            "completed_at": get_timestamp()
+        }}
+    )
+    
+    await broadcast_update("batch.updated", {
+        "batch_code": workspace["batch_code"],
+        "status": "Completed",
+        "wip_lot_number": wip_lot_number
+    })
+    await broadcast_update("inventory.updated", {"item_type": "raw_material"})
+    
+    variance = float(actual_batch_size) - workspace["planned_qty"]
+    variance_percent = (variance / workspace["planned_qty"]) * 100 if workspace["planned_qty"] > 0 else 0
+    
+    return {
+        "message": "Batching sheet processed successfully",
+        "batch_code": workspace["batch_code"],
+        "wip_lot_number": wip_lot_number,
+        "actual_qty": actual_batch_size,
+        "variance": round(variance, 3),
+        "variance_percent": round(variance_percent, 2),
+        "consumptions_created": len(consumptions_created),
+        "transactions_created": len(transactions_created),
+        "warnings": parsed.get("warnings", [])
+    }
+
+@batching_router.post("/workspace/{batch_id}/start")
+async def start_batching(batch_id: str, user: dict = Depends(require_roles(["Admin", "Production"]))):
+    """Mark a batching workspace as In Progress"""
+    workspace = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Batching workspace not found")
+    
+    await db.batching_workspace.update_one(
+        {"id": batch_id},
+        {"$set": {"status": "In Progress"}}
+    )
+    await broadcast_update("batch.updated", {"batch_code": workspace["batch_code"], "status": "In Progress"})
+    
+    return {"message": "Batching started", "status": "In Progress"}
+
+@batching_router.post("/workspace/{batch_id}/qa-hold")
+async def qa_hold_batching(batch_id: str, user: dict = Depends(require_roles(["Admin", "QA"]))):
+    """Place a completed batch on QA hold"""
+    workspace = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Batching workspace not found")
+    
+    await db.batching_workspace.update_one(
+        {"id": batch_id},
+        {"$set": {"status": "QA Hold"}}
+    )
+    
+    if workspace.get("wip_lot_number"):
+        await db.stock_snapshots.update_many(
+            {"lot_number": workspace["wip_lot_number"]},
+            {"$set": {"status": "Quarantine"}}
+        )
+    
+    await broadcast_update("batch.updated", {"batch_code": workspace["batch_code"], "status": "QA Hold"})
+    return {"message": "Batch on QA hold", "status": "QA Hold"}
+
+@batching_router.post("/workspace/{batch_id}/release")
+async def release_batching(batch_id: str, user: dict = Depends(require_roles(["Admin", "QA"]))):
+    """Release a batch from QA hold"""
+    workspace = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Batching workspace not found")
+    
+    await db.batching_workspace.update_one(
+        {"id": batch_id},
+        {"$set": {"status": "Released"}}
+    )
+    
+    if workspace.get("wip_lot_number"):
+        await db.stock_snapshots.update_many(
+            {"lot_number": workspace["wip_lot_number"]},
+            {"$set": {"status": "Available"}}
+        )
+    
+    await broadcast_update("batch.updated", {"batch_code": workspace["batch_code"], "status": "Released"})
+    return {"message": "Batch released", "status": "Released"}
+
+# ============ FORMULAS / BOM ROUTES (PLACEHOLDER) ============
+
+class FormulaCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    product_id: Optional[str] = None
+    default_batch_size: float = 1.0
+    batch_unit: str = "KG"
+    tags: Optional[List[str]] = []
+
+class FormulaLineCreate(BaseModel):
+    formula_id: str
+    raw_material_sku: str
+    phase: Optional[str] = ""
+    percent: float = 0
+    default_qty_per_batch: float = 0
+    uom: str = "KG"
+    optional: bool = False
+    notes: Optional[str] = ""
+
+@formulas_router.get("/")
+async def list_formulas(user: dict = Depends(get_current_user)):
+    """List all formulas (placeholder for future BOM)"""
+    formulas = await db.formulas.find({}, {"_id": 0}).to_list(1000)
+    return formulas
+
+@formulas_router.post("/")
+async def create_formula(data: FormulaCreate, user: dict = Depends(require_roles(["Admin", "Production"]))):
+    """Create a new formula (placeholder)"""
+    formula = {
+        "id": generate_id(),
+        "name": data.name,
+        "description": data.description or "",
+        "product_id": data.product_id,
+        "default_batch_size": data.default_batch_size,
+        "batch_unit": data.batch_unit,
+        "status": "Active",
+        "tags": data.tags or [],
+        "created_at": get_timestamp(),
+        "created_by": user["id"]
+    }
+    await db.formulas.insert_one(formula)
+    return formula
+
+@formulas_router.get("/{formula_id}")
+async def get_formula(formula_id: str, user: dict = Depends(get_current_user)):
+    """Get a formula with its lines"""
+    formula = await db.formulas.find_one({"id": formula_id}, {"_id": 0})
+    if not formula:
+        raise HTTPException(status_code=404, detail="Formula not found")
+    
+    lines = await db.formula_lines.find({"formula_id": formula_id}, {"_id": 0}).to_list(100)
+    formula["lines"] = lines
+    return formula
+
+@formulas_router.post("/lines")
+async def add_formula_line(data: FormulaLineCreate, user: dict = Depends(require_roles(["Admin", "Production"]))):
+    """Add a line to a formula"""
+    line = {
+        "id": generate_id(),
+        "formula_id": data.formula_id,
+        "raw_material_sku": data.raw_material_sku,
+        "phase": data.phase or "",
+        "percent": data.percent,
+        "default_qty_per_batch": data.default_qty_per_batch,
+        "uom": data.uom,
+        "optional": data.optional,
+        "notes": data.notes or "",
+        "created_at": get_timestamp()
+    }
+    await db.formula_lines.insert_one(line)
+    return line
+
+@formulas_router.get("/{formula_id}/lines")
+async def list_formula_lines(formula_id: str, user: dict = Depends(get_current_user)):
+    """List all lines for a formula"""
+    lines = await db.formula_lines.find({"formula_id": formula_id}, {"_id": 0}).to_list(100)
+    return lines
+
 # ============ WEBSOCKET ============
 
 @app.websocket("/ws")
