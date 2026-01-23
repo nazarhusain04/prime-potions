@@ -42,6 +42,9 @@ master_router = APIRouter(prefix="/master", tags=["Master Data"])
 inventory_router = APIRouter(prefix="/inventory", tags=["Inventory"])
 manufacturing_router = APIRouter(prefix="/manufacturing", tags=["Manufacturing"])
 traceability_router = APIRouter(prefix="/traceability", tags=["Traceability"])
+excel_router = APIRouter(prefix="/excel", tags=["Excel Sync"])
+batching_router = APIRouter(prefix="/batching", tags=["Batching Workspace"])
+formulas_router = APIRouter(prefix="/formulas", tags=["Formulas/BOM"])
 
 # Security
 security = HTTPBearer()
