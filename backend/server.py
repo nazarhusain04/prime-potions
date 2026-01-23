@@ -2168,6 +2168,8 @@ async def create_batching_workspace(
     await db.batching_workspace.insert_one(workspace)
     await broadcast_update("batch.updated", {"batch_code": batch_code, "status": "Planned"})
     
+    # Remove _id if MongoDB added it
+    workspace.pop("_id", None)
     return workspace
 
 @batching_router.get("/workspace/{batch_id}")
