@@ -16,7 +16,9 @@ import {
   MapPin,
   Ruler,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  FileSpreadsheet,
+  Beaker
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
@@ -26,6 +28,21 @@ const menuItems = [
     icon: LayoutDashboard,
     path: '/dashboard',
     roles: ['Admin', 'Production', 'Warehouse', 'QA', 'Viewer']
+  },
+  {
+    label: 'Batching',
+    icon: Beaker,
+    roles: ['Admin', 'Production'],
+    children: [
+      { label: 'Workspace', path: '/batching', icon: Factory },
+      { label: 'Formulas', path: '/formulas', icon: ClipboardList }
+    ]
+  },
+  {
+    label: 'Excel Sync',
+    icon: FileSpreadsheet,
+    path: '/excel-sync',
+    roles: ['Admin', 'Warehouse', 'Production']
   },
   {
     label: 'Master Data',
