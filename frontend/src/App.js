@@ -82,6 +82,11 @@ function App() {
                 {/* Traceability */}
                 <Route path="/traceability" element={<TraceabilityPage />} />
                 
+                {/* Excel Sync & Batching */}
+                <Route path="/excel-sync" element={<ExcelSyncPage />} />
+                <Route path="/batching" element={<BatchingWorkspacePage />} />
+                <Route path="/formulas" element={<FormulasPage />} />
+                
                 {/* Admin */}
                 <Route path="/admin/users" element={<UsersPage />} />
                 <Route path="/admin/settings" element={<CompanySettingsPage />} />
