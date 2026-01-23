@@ -2493,6 +2493,7 @@ async def create_formula(data: FormulaCreate, user: dict = Depends(require_roles
         "created_by": user["id"]
     }
     await db.formulas.insert_one(formula)
+    formula.pop("_id", None)
     return formula
 
 @formulas_router.get("/{formula_id}")
