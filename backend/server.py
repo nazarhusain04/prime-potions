@@ -2469,7 +2469,7 @@ class FormulaLineCreate(BaseModel):
     optional: bool = False
     notes: Optional[str] = ""
 
-@formulas_router.get("/")
+@formulas_router.get("")
 async def list_formulas(user: dict = Depends(get_current_user)):
     """List all formulas (placeholder for future BOM)"""
     formulas = await db.formulas.find({}, {"_id": 0}).to_list(1000)
