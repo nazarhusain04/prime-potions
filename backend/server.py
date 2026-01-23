@@ -2475,7 +2475,7 @@ async def list_formulas(user: dict = Depends(get_current_user)):
     formulas = await db.formulas.find({}, {"_id": 0}).to_list(1000)
     return formulas
 
-@formulas_router.post("/")
+@formulas_router.post("")
 async def create_formula(data: FormulaCreate, user: dict = Depends(require_roles(["Admin", "Production"]))):
     """Create a new formula (placeholder)"""
     formula = {
