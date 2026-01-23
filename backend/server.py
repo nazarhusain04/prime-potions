@@ -2523,6 +2523,7 @@ async def add_formula_line(data: FormulaLineCreate, user: dict = Depends(require
         "created_at": get_timestamp()
     }
     await db.formula_lines.insert_one(line)
+    line.pop("_id", None)
     return line
 
 @formulas_router.get("/{formula_id}/lines")
