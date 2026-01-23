@@ -231,12 +231,13 @@ export const BatchingWorkspacePage = () => {
                 <div className="space-y-2">
                   <Label>Formula (Optional)</Label>
                   <Select
-                    value={formData.formula_id}
+                    value={formData.formula_id || 'none'}
                     onValueChange={(v) => {
-                      const formula = formulas.find(f => f.id === v);
+                      const actualValue = v === 'none' ? '' : v;
+                      const formula = formulas.find(f => f.id === actualValue);
                       setFormData({ 
                         ...formData, 
-                        formula_id: v,
+                        formula_id: actualValue,
                         formula_name: formula?.name || formData.formula_name,
                         batch_unit: formula?.batch_unit || formData.batch_unit
                       });
@@ -246,7 +247,7 @@ export const BatchingWorkspacePage = () => {
                       <SelectValue placeholder="Select formula or leave empty" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">No formula (manual)</SelectItem>
+                      <SelectItem value="none">No formula (manual)</SelectItem>
                       {formulas.map((f) => (
                         <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
                       ))}
