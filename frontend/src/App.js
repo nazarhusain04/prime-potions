@@ -34,6 +34,11 @@ import { WipOnFloorPage } from './pages/manufacturing/WipOnFloorPage';
 // Traceability
 import { TraceabilityPage } from './pages/TraceabilityPage';
 
+// Excel Sync & Batching
+import { ExcelSyncPage } from './pages/ExcelSyncPage';
+import { BatchingWorkspacePage } from './pages/BatchingWorkspacePage';
+import { FormulasPage } from './pages/FormulasPage';
+
 // Admin
 import { UsersPage } from './pages/admin/UsersPage';
 import { CompanySettingsPage } from './pages/admin/CompanySettingsPage';
