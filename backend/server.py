@@ -1931,6 +1931,9 @@ api_router.include_router(master_router)
 api_router.include_router(inventory_router)
 api_router.include_router(manufacturing_router)
 api_router.include_router(traceability_router)
+api_router.include_router(excel_router)
+api_router.include_router(batching_router)
+api_router.include_router(formulas_router)
 app.include_router(api_router)
 
 # CORS
