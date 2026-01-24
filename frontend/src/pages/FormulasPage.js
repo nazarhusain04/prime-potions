@@ -4,6 +4,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
+import { Switch } from '../components/ui/switch';
 import {
   Table,
   TableBody,
@@ -29,7 +30,7 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, ClipboardList, Loader2, Trash2 } from 'lucide-react';
+import { Plus, ClipboardList, Loader2, Lock, Unlock, Edit, Trash2 } from 'lucide-react';
 import api from '../lib/api';
 import { formatDate } from '../lib/utils';
 
@@ -43,24 +44,32 @@ export const FormulasPage = () => {
   const [selectedFormula, setSelectedFormula] = useState(null);
   const [formulaLines, setFormulaLines] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [editMode, setEditMode] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     product_id: '',
+    category: '',
     default_batch_size: 1,
     batch_unit: 'KG',
+    recipe_required: false,
+    variance_tolerance_percent: 2.0,
     tags: []
   });
 
   const [lineData, setLineData] = useState({
+    raw_material_id: '',
     raw_material_sku: '',
+    ingredient_display_name: '',
     phase: '',
+    add_order: 0,
     percent: 0,
-    default_qty_per_batch: 0,
+    default_qty_required: 0,
     uom: 'KG',
     optional: false,
-    notes: ''
+    process_notes: '',
+    batch_notes: ''
   });
 
   const fetchData = async () => {
@@ -70,9 +79,9 @@ export const FormulasPage = () => {
         api.get('/master/products'),
         api.get('/master/raw-materials')
       ]);
-      setFormulas(formulasRes.data);
-      setProducts(productsRes.data);
-      setRawMaterials(rmRes.data);
+      setFormulas(Array.isArray(formulasRes) ? formulasRes : formulasRes.data || []);
+      setProducts(Array.isArray(productsRes) ? productsRes : productsRes.data || []);
+      setRawMaterials(Array.isArray(rmRes) ? rmRes : rmRes.data || []);
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
@@ -84,28 +93,65 @@ export const FormulasPage = () => {
     fetchData();
   }, []);
 
+  const resetFormData = () => {
+    setFormData({
+      name: '',
+      description: '',
+      product_id: '',
+      category: '',
+      default_batch_size: 1,
+      batch_unit: 'KG',
+      recipe_required: false,
+      variance_tolerance_percent: 2.0,
+      tags: []
+    });
+    setEditMode(false);
+  };
+
   const handleCreateFormula = async (e) => {
     e.preventDefault();
     setSaving(true);
 
     try {
-      await api.post('/formulas', formData);
-      toast.success('Formula created');
+      if (editMode && selectedFormula) {
+        await api.put(`/formulas/${selectedFormula.id}`, formData);
+        toast.success('Formula updated');
+      } else {
+        await api.post('/formulas', formData);
+        toast.success('Formula created');
+      }
       setDialogOpen(false);
-      setFormData({ name: '', description: '', product_id: '', default_batch_size: 1, batch_unit: 'KG', tags: [] });
+      resetFormData();
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create formula');
+      toast.error(error.response?.data?.detail || 'Failed to save formula');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleEditFormula = (formula) => {
+    setFormData({
+      name: formula.name,
+      description: formula.description || '',
+      product_id: formula.product_id || '',
+      category: formula.category || '',
+      default_batch_size: formula.default_batch_size || 1,
+      batch_unit: formula.batch_unit || 'KG',
+      recipe_required: formula.recipe_required || false,
+      variance_tolerance_percent: formula.variance_tolerance_percent || 2.0,
+      tags: formula.tags || []
+    });
+    setSelectedFormula(formula);
+    setEditMode(true);
+    setDialogOpen(true);
   };
 
   const handleViewLines = async (formula) => {
     setSelectedFormula(formula);
     try {
       const response = await api.get(`/formulas/${formula.id}/lines`);
-      setFormulaLines(response.data);
+      setFormulaLines(Array.isArray(response) ? response : response.data || []);
       setLineDialogOpen(true);
     } catch (error) {
       toast.error('Failed to load formula lines');
@@ -118,21 +164,49 @@ export const FormulasPage = () => {
     setSaving(true);
 
     try {
+      // Get the material name if we have a sku
+      const material = rawMaterials.find(m => m.sku === lineData.raw_material_sku);
+      
       await api.post('/formulas/lines', {
         formula_id: selectedFormula.id,
-        ...lineData
+        ...lineData,
+        raw_material_id: material?.id || '',
+        ingredient_display_name: lineData.ingredient_display_name || material?.name || lineData.raw_material_sku
       });
       toast.success('Line added');
       
-      // Refresh lines
       const response = await api.get(`/formulas/${selectedFormula.id}/lines`);
-      setFormulaLines(response.data);
+      setFormulaLines(Array.isArray(response) ? response : response.data || []);
       
-      setLineData({ raw_material_sku: '', phase: '', percent: 0, default_qty_per_batch: 0, uom: 'KG', optional: false, notes: '' });
+      setLineData({
+        raw_material_id: '',
+        raw_material_sku: '',
+        ingredient_display_name: '',
+        phase: '',
+        add_order: formulaLines.length + 1,
+        percent: 0,
+        default_qty_required: 0,
+        uom: 'KG',
+        optional: false,
+        process_notes: '',
+        batch_notes: ''
+      });
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to add line');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDeleteLine = async (lineId) => {
+    if (!confirm('Delete this ingredient line?')) return;
+    try {
+      await api.delete(`/formulas/lines/${lineId}`);
+      toast.success('Line deleted');
+      const response = await api.get(`/formulas/${selectedFormula.id}/lines`);
+      setFormulaLines(Array.isArray(response) ? response : response.data || []);
+    } catch (error) {
+      toast.error('Failed to delete line');
     }
   };
 
@@ -151,21 +225,21 @@ export const FormulasPage = () => {
     <div className="space-y-6" data-testid="formulas-page">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Formulas / BOM</h1>
-          <p className="text-slate-500">Define product formulas for batching (placeholder for full BOM)</p>
+          <h1 className="text-2xl font-bold text-slate-900">Formulas / Recipe Library</h1>
+          <p className="text-slate-500">Define formulas with optional strict recipe enforcement</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetFormData(); }}>
           <DialogTrigger asChild>
             <Button className="btn-primary gap-2" data-testid="add-formula-btn">
               <Plus className="w-4 h-4" />
               Add Formula
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-w-lg">
             <DialogHeader>
-              <DialogTitle>Create Formula</DialogTitle>
+              <DialogTitle>{editMode ? 'Edit Formula' : 'Create Formula'}</DialogTitle>
               <DialogDescription>
-                Define a new formula. You can add ingredient lines after creation.
+                {editMode ? 'Update formula settings' : 'Define a new formula with recipe_required option'}
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleCreateFormula} className="space-y-4">
@@ -179,32 +253,35 @@ export const FormulasPage = () => {
                   data-testid="formula-name-input"
                 />
               </div>
-              <div className="space-y-2">
-                <Label>Description</Label>
-                <Input
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Optional description"
-                  data-testid="formula-desc-input"
-                />
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Category</Label>
+                  <Input
+                    value={formData.category}
+                    onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                    placeholder="e.g., Sanitizers"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Linked Product</Label>
+                  <Select
+                    value={formData.product_id || 'none'}
+                    onValueChange={(v) => setFormData({ ...formData, product_id: v === 'none' ? '' : v })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select product" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No product link</SelectItem>
+                      {products.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label>Linked Product (Optional)</Label>
-                <Select
-                  value={formData.product_id}
-                  onValueChange={(v) => setFormData({ ...formData, product_id: v })}
-                >
-                  <SelectTrigger data-testid="formula-product-select">
-                    <SelectValue placeholder="Select product or leave empty" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="">No product link</SelectItem>
-                    {products.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Default Batch Size</Label>
@@ -213,7 +290,6 @@ export const FormulasPage = () => {
                     step="0.01"
                     value={formData.default_batch_size}
                     onChange={(e) => setFormData({ ...formData, default_batch_size: parseFloat(e.target.value) || 1 })}
-                    data-testid="formula-size-input"
                   />
                 </div>
                 <div className="space-y-2">
@@ -222,24 +298,77 @@ export const FormulasPage = () => {
                     value={formData.batch_unit}
                     onValueChange={(v) => setFormData({ ...formData, batch_unit: v })}
                   >
-                    <SelectTrigger data-testid="formula-unit-select">
+                    <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="KG">KG</SelectItem>
                       <SelectItem value="L">L</SelectItem>
+                      <SelectItem value="G">G</SelectItem>
+                      <SelectItem value="OZ">OZ</SelectItem>
+                      <SelectItem value="LB">LB</SelectItem>
                       <SelectItem value="EA">EA</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
+
+              {/* Recipe Required Toggle - KEY FEATURE */}
+              <div className="bg-amber-50 p-4 rounded-lg border border-amber-200">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {formData.recipe_required ? (
+                      <Lock className="w-5 h-5 text-amber-600" />
+                    ) : (
+                      <Unlock className="w-5 h-5 text-gray-400" />
+                    )}
+                    <div>
+                      <Label className="font-medium">Recipe Required</Label>
+                      <p className="text-xs text-gray-500">
+                        When ON, batching must match this recipe exactly
+                      </p>
+                    </div>
+                  </div>
+                  <Switch
+                    checked={formData.recipe_required}
+                    onCheckedChange={(checked) => setFormData({ ...formData, recipe_required: checked })}
+                    data-testid="recipe-required-switch"
+                  />
+                </div>
+                
+                {formData.recipe_required && (
+                  <div className="mt-3 pt-3 border-t border-amber-200">
+                    <Label className="text-xs">Variance Tolerance (%)</Label>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      value={formData.variance_tolerance_percent}
+                      onChange={(e) => setFormData({ ...formData, variance_tolerance_percent: parseFloat(e.target.value) || 0 })}
+                      className="mt-1 h-8"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Allowed deviation from default qty (0 = exact match required)
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label>Description</Label>
+                <Input
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  placeholder="Optional description"
+                />
+              </div>
+
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
+                <Button type="button" variant="outline" onClick={() => { setDialogOpen(false); resetFormData(); }}>
                   Cancel
                 </Button>
-                <Button type="submit" className="btn-primary" disabled={saving} data-testid="save-formula-btn">
+                <Button type="submit" className="btn-primary" disabled={saving}>
                   {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                  Create Formula
+                  {editMode ? 'Save Changes' : 'Create Formula'}
                 </Button>
               </DialogFooter>
             </form>
@@ -249,11 +378,19 @@ export const FormulasPage = () => {
 
       {/* Formula Lines Dialog */}
       <Dialog open={lineDialogOpen} onOpenChange={setLineDialogOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-auto">
           <DialogHeader>
-            <DialogTitle>Formula: {selectedFormula?.name}</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              {selectedFormula?.name}
+              {selectedFormula?.recipe_required && (
+                <Badge className="bg-amber-500">
+                  <Lock className="w-3 h-3 mr-1" />
+                  Strict Recipe
+                </Badge>
+              )}
+            </DialogTitle>
             <DialogDescription>
-              Manage ingredient lines for this formula
+              Manage ingredient lines. Display names must match your Excel "Ingredient Formula" column exactly.
             </DialogDescription>
           </DialogHeader>
           
@@ -263,21 +400,33 @@ export const FormulasPage = () => {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Material</TableHead>
+                    <TableHead className="w-8">#</TableHead>
+                    <TableHead>Display Name (Excel Match)</TableHead>
+                    <TableHead>Material SKU</TableHead>
                     <TableHead>Phase</TableHead>
-                    <TableHead>%</TableHead>
-                    <TableHead>Qty/Batch</TableHead>
+                    <TableHead>Qty Required</TableHead>
                     <TableHead>UOM</TableHead>
+                    <TableHead className="w-10"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {formulaLines.map((line) => (
+                  {formulaLines.map((line, idx) => (
                     <TableRow key={line.id}>
-                      <TableCell className="font-medium">{getMaterialName(line.raw_material_sku)}</TableCell>
+                      <TableCell className="text-gray-400">{line.add_order || idx + 1}</TableCell>
+                      <TableCell className="font-medium">{line.ingredient_display_name}</TableCell>
+                      <TableCell className="font-mono text-xs">{line.raw_material_sku}</TableCell>
                       <TableCell>{line.phase || '-'}</TableCell>
-                      <TableCell>{line.percent}%</TableCell>
-                      <TableCell>{line.default_qty_per_batch}</TableCell>
+                      <TableCell>{line.default_qty_required}</TableCell>
                       <TableCell>{line.uom}</TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteLine(line.id)}
+                        >
+                          <Trash2 className="w-4 h-4 text-red-400" />
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -287,57 +436,111 @@ export const FormulasPage = () => {
             )}
 
             {/* Add Line Form */}
-            <form onSubmit={handleAddLine} className="border-t border-slate-200 pt-4">
+            <form onSubmit={handleAddLine} className="border-t pt-4">
               <h4 className="font-semibold text-sm mb-3">Add Ingredient Line</h4>
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-3 gap-3 mb-3">
                 <div className="space-y-1">
-                  <Label className="text-xs">Material</Label>
+                  <Label className="text-xs">Raw Material</Label>
                   <Select
-                    value={lineData.raw_material_sku}
-                    onValueChange={(v) => setLineData({ ...lineData, raw_material_sku: v })}
+                    value={lineData.raw_material_sku || 'none'}
+                    onValueChange={(v) => {
+                      const mat = rawMaterials.find(m => m.sku === v);
+                      setLineData({ 
+                        ...lineData, 
+                        raw_material_sku: v === 'none' ? '' : v,
+                        ingredient_display_name: mat?.name || ''
+                      });
+                    }}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select" />
+                      <SelectValue placeholder="Select material" />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="none">Select...</SelectItem>
                       {rawMaterials.map((m) => (
-                        <SelectItem key={m.id} value={m.sku}>{m.name}</SelectItem>
+                        <SelectItem key={m.id} value={m.sku}>{m.name} ({m.sku})</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="space-y-1 col-span-2">
+                  <Label className="text-xs">Display Name (must match Excel exactly)</Label>
+                  <Input
+                    value={lineData.ingredient_display_name}
+                    onChange={(e) => setLineData({ ...lineData, ingredient_display_name: e.target.value })}
+                    placeholder="Name as it appears in Excel"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-5 gap-3 mb-3">
                 <div className="space-y-1">
                   <Label className="text-xs">Phase</Label>
                   <Input
                     value={lineData.phase}
                     onChange={(e) => setLineData({ ...lineData, phase: e.target.value })}
-                    placeholder="A, B, C..."
+                    placeholder="A, B..."
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs">Percent</Label>
+                  <Label className="text-xs">Add Order</Label>
                   <Input
                     type="number"
-                    step="0.01"
-                    value={lineData.percent}
-                    onChange={(e) => setLineData({ ...lineData, percent: parseFloat(e.target.value) || 0 })}
+                    value={lineData.add_order}
+                    onChange={(e) => setLineData({ ...lineData, add_order: parseInt(e.target.value) || 0 })}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs">Qty/Batch</Label>
+                  <Label className="text-xs">Qty Required</Label>
                   <Input
                     type="number"
-                    step="0.01"
-                    value={lineData.default_qty_per_batch}
-                    onChange={(e) => setLineData({ ...lineData, default_qty_per_batch: parseFloat(e.target.value) || 0 })}
+                    step="0.001"
+                    value={lineData.default_qty_required}
+                    onChange={(e) => setLineData({ ...lineData, default_qty_required: parseFloat(e.target.value) || 0 })}
                   />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">UOM</Label>
+                  <Select
+                    value={lineData.uom}
+                    onValueChange={(v) => setLineData({ ...lineData, uom: v })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="KG">KG</SelectItem>
+                      <SelectItem value="G">G</SelectItem>
+                      <SelectItem value="L">L</SelectItem>
+                      <SelectItem value="ML">ML</SelectItem>
+                      <SelectItem value="OZ">OZ</SelectItem>
+                      <SelectItem value="EA">EA</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-end">
+                  <Button type="submit" size="sm" className="btn-primary w-full" disabled={saving || !lineData.raw_material_sku}>
+                    {saving && <Loader2 className="w-3 h-3 mr-1 animate-spin" />}
+                    Add
+                  </Button>
                 </div>
               </div>
-              <div className="mt-3 flex justify-end">
-                <Button type="submit" size="sm" className="btn-primary" disabled={saving || !lineData.raw_material_sku}>
-                  {saving && <Loader2 className="w-3 h-3 mr-1 animate-spin" />}
-                  Add Line
-                </Button>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Process Notes</Label>
+                  <Input
+                    value={lineData.process_notes}
+                    onChange={(e) => setLineData({ ...lineData, process_notes: e.target.value })}
+                    placeholder="Process instructions"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Batch Notes</Label>
+                  <Input
+                    value={lineData.batch_notes}
+                    onChange={(e) => setLineData({ ...lineData, batch_notes: e.target.value })}
+                    placeholder="Batch-specific notes"
+                  />
+                </div>
               </div>
             </form>
           </div>
@@ -345,20 +548,26 @@ export const FormulasPage = () => {
       </Dialog>
 
       {/* Formulas Table */}
-      <Card className="border-slate-200">
-        <CardHeader className="py-3 px-4 border-b border-slate-100">
-          <Badge variant="secondary">{formulas.length} formulas</Badge>
+      <Card>
+        <CardHeader className="py-3 px-4 border-b">
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary">{formulas.length} formulas</Badge>
+            <Badge variant="outline" className="bg-amber-50">
+              <Lock className="w-3 h-3 mr-1" />
+              {formulas.filter(f => f.recipe_required).length} strict
+            </Badge>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
               <TableRow className="bg-slate-50">
-                <TableHead className="text-xs uppercase">Name</TableHead>
-                <TableHead className="text-xs uppercase">Product</TableHead>
-                <TableHead className="text-xs uppercase">Default Size</TableHead>
-                <TableHead className="text-xs uppercase">Status</TableHead>
-                <TableHead className="text-xs uppercase">Created</TableHead>
-                <TableHead className="text-xs uppercase">Actions</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Default Size</TableHead>
+                <TableHead>Recipe Mode</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -366,25 +575,43 @@ export const FormulasPage = () => {
                 formulas.map((formula) => (
                   <TableRow key={formula.id} className="hover:bg-slate-50">
                     <TableCell className="font-medium">{formula.name}</TableCell>
-                    <TableCell>{getProductName(formula.product_id)}</TableCell>
+                    <TableCell>{formula.category || '-'}</TableCell>
                     <TableCell>{formula.default_batch_size} {formula.batch_unit}</TableCell>
                     <TableCell>
-                      <Badge className={formula.status === 'Active' ? 'status-available' : 'bg-gray-100 text-gray-800'}>
+                      {formula.recipe_required ? (
+                        <Badge className="bg-amber-500">
+                          <Lock className="w-3 h-3 mr-1" />
+                          Strict ({formula.variance_tolerance_percent || 0}%)
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline">
+                          <Unlock className="w-3 h-3 mr-1" />
+                          Flexible
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={formula.status === 'Active' ? 'bg-green-500' : 'bg-gray-400'}>
                         {formula.status}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-xs text-slate-500">
-                      {formatDate(formula.created_at)}
-                    </TableCell>
                     <TableCell>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleViewLines(formula)}
-                        data-testid={`view-lines-${formula.id}`}
-                      >
-                        View Lines
-                      </Button>
+                      <div className="flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleViewLines(formula)}
+                        >
+                          Lines
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleEditFormula(formula)}
+                        >
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -404,3 +631,5 @@ export const FormulasPage = () => {
     </div>
   );
 };
+
+export default FormulasPage;
