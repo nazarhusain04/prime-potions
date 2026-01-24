@@ -1054,6 +1054,137 @@ async def get_low_stock_alerts(user: dict = Depends(get_current_user)):
     alerts = await db.items.aggregate(pipeline).to_list(500)
     return {"alerts": alerts, "count": len(alerts)}
 
+# ============ SEARCH ENDPOINTS (for searchable dropdowns) ============
+
+search_router = APIRouter(prefix="/search", tags=["Search"])
+
+@search_router.get("/items")
+async def search_items(
+    q: str = "",
+    type: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = Query(50, le=200),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Search items by name/SKU for searchable dropdowns
+    Supports type filter: RAW, PACK, FG
+    """
+    query = {}
+    
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"sku": {"$regex": q, "$options": "i"}}
+        ]
+    
+    if type:
+        query["type"] = type.upper()
+    
+    if category:
+        query["category"] = category
+    
+    items = await db.items.find(
+        query,
+        {"_id": 0, "id": 1, "sku": 1, "name": 1, "type": 1, "category": 1, "unit_of_measure": 1}
+    ).limit(limit).to_list(limit)
+    
+    return {"items": items, "count": len(items)}
+
+@search_router.get("/lots")
+async def search_lots(
+    q: str = "",
+    item_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+    available_only: bool = True,
+    limit: int = Query(50, le=200),
+    user: dict = Depends(get_current_user)
+):
+    """Search lots for searchable dropdowns"""
+    query = {}
+    
+    if q:
+        query["lot_number"] = {"$regex": q, "$options": "i"}
+    
+    if item_id:
+        query["item_id"] = item_id
+    
+    if location_id:
+        query["location_id"] = location_id
+    
+    if available_only:
+        query["quantity_available"] = {"$gt": 0}
+    
+    lots = await db.stock_snapshots.find(
+        query,
+        {"_id": 0, "lot_number": 1, "item_id": 1, "location_id": 1, "quantity_on_hand": 1, "quantity_available": 1, "status": 1}
+    ).limit(limit).to_list(limit)
+    
+    return {"lots": lots, "count": len(lots)}
+
+@search_router.get("/categories")
+async def search_categories(
+    q: str = "",
+    type: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Get distinct categories from items"""
+    query = {}
+    if type:
+        query["type"] = type.upper()
+    
+    categories = await db.items.distinct("category", query)
+    sub_categories = await db.items.distinct("sub_category", query)
+    
+    all_cats = list(set([c for c in categories + sub_categories if c and (not q or q.lower() in c.lower())]))
+    all_cats.sort()
+    
+    return {"categories": all_cats}
+
+@search_router.get("/locations")
+async def search_locations(
+    q: str = "",
+    limit: int = Query(50, le=200),
+    user: dict = Depends(get_current_user)
+):
+    """Search locations for dropdowns"""
+    query = {}
+    if q:
+        query["$or"] = [
+            {"code": {"$regex": q, "$options": "i"}},
+            {"name": {"$regex": q, "$options": "i"}}
+        ]
+    
+    locations = await db.locations.find(
+        query,
+        {"_id": 0, "id": 1, "code": 1, "name": 1, "type": 1}
+    ).limit(limit).to_list(limit)
+    
+    return {"locations": locations, "count": len(locations)}
+
+@search_router.get("/formulas")
+async def search_formulas(
+    q: str = "",
+    category: Optional[str] = None,
+    limit: int = Query(50, le=200),
+    user: dict = Depends(get_current_user)
+):
+    """Search formulas/recipes for dropdowns"""
+    query = {"status": "Active"}
+    
+    if q:
+        query["name"] = {"$regex": q, "$options": "i"}
+    
+    if category:
+        query["category"] = category
+    
+    formulas = await db.formulas.find(
+        query,
+        {"_id": 0, "id": 1, "name": 1, "category": 1, "recipe_required": 1, "batch_unit": 1}
+    ).limit(limit).to_list(limit)
+    
+    return {"formulas": formulas, "count": len(formulas)}
+
 @inventory_router.post("/receive")
 async def receive_inventory(
     item_id: str,
