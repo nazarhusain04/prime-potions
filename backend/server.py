@@ -2839,27 +2839,63 @@ async def get_formula(formula_id: str, user: dict = Depends(get_current_user)):
 
 @formulas_router.post("/lines")
 async def add_formula_line(data: FormulaLineCreate, user: dict = Depends(require_roles(["Admin", "Production"]))):
-    """Add a line to a formula"""
+    """Add a line to a formula with ingredient_display_name for Excel matching"""
     line = {
         "id": generate_id(),
         "formula_id": data.formula_id,
+        "raw_material_id": data.raw_material_id,
         "raw_material_sku": data.raw_material_sku,
+        "ingredient_display_name": data.ingredient_display_name,  # Excel matching
         "phase": data.phase or "",
+        "add_order": data.add_order,
         "percent": data.percent,
-        "default_qty_per_batch": data.default_qty_per_batch,
+        "default_qty_required": data.default_qty_required,
         "uom": data.uom,
         "optional": data.optional,
-        "notes": data.notes or "",
+        "process_notes": data.process_notes or "",
+        "batch_notes": data.batch_notes or "",
         "created_at": get_timestamp()
     }
     await db.formula_lines.insert_one(line)
     line.pop("_id", None)
     return line
 
+@formulas_router.put("/lines/{line_id}")
+async def update_formula_line(line_id: str, data: FormulaLineCreate, user: dict = Depends(require_roles(["Admin", "Production"]))):
+    """Update a formula line"""
+    result = await db.formula_lines.find_one_and_update(
+        {"id": line_id},
+        {"$set": {
+            "raw_material_id": data.raw_material_id,
+            "raw_material_sku": data.raw_material_sku,
+            "ingredient_display_name": data.ingredient_display_name,
+            "phase": data.phase,
+            "add_order": data.add_order,
+            "percent": data.percent,
+            "default_qty_required": data.default_qty_required,
+            "uom": data.uom,
+            "optional": data.optional,
+            "process_notes": data.process_notes,
+            "batch_notes": data.batch_notes
+        }},
+        return_document=True
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Formula line not found")
+    return {k: v for k, v in result.items() if k != "_id"}
+
+@formulas_router.delete("/lines/{line_id}")
+async def delete_formula_line(line_id: str, user: dict = Depends(require_roles(["Admin"]))):
+    """Delete a formula line"""
+    result = await db.formula_lines.delete_one({"id": line_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Formula line not found")
+    return {"message": "Line deleted"}
+
 @formulas_router.get("/{formula_id}/lines")
 async def list_formula_lines(formula_id: str, user: dict = Depends(get_current_user)):
     """List all lines for a formula"""
-    lines = await db.formula_lines.find({"formula_id": formula_id}, {"_id": 0}).to_list(100)
+    lines = await db.formula_lines.find({"formula_id": formula_id}, {"_id": 0}).sort("add_order", 1).to_list(100)
     return lines
 
 # ============ WEBSOCKET ============
