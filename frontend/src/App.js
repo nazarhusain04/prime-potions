@@ -24,6 +24,7 @@ import { UnitsPage } from './pages/master/UnitsPage';
 import { StockPage } from './pages/inventory/StockPage';
 import { TransactionsPage } from './pages/inventory/TransactionsPage';
 import { ReceivePage } from './pages/inventory/ReceivePage';
+import { InventoryOverviewPage } from './pages/inventory/InventoryOverviewPage';
 
 // Manufacturing
 import { BatchOrdersPage } from './pages/manufacturing/BatchOrdersPage';
