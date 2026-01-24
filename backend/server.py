@@ -2755,36 +2755,46 @@ class FormulaCreate(BaseModel):
     name: str
     description: Optional[str] = ""
     product_id: Optional[str] = None
+    category: Optional[str] = ""
     default_batch_size: float = 1.0
     batch_unit: str = "KG"
+    recipe_required: bool = False  # When TRUE, batching must match recipe exactly
+    variance_tolerance_percent: float = 2.0  # Allowed variance from default qty
     tags: Optional[List[str]] = []
 
 class FormulaLineCreate(BaseModel):
     formula_id: str
+    raw_material_id: Optional[str] = None
     raw_material_sku: str
-    phase: Optional[str] = ""
+    ingredient_display_name: str  # MUST match Excel "Ingredient Formula" text
+    phase: Optional[str] = ""  # A, B, C, D phases
+    add_order: int = 0  # Order to add ingredients
     percent: float = 0
-    default_qty_per_batch: float = 0
+    default_qty_required: float = 0  # Default qty for recipe
     uom: str = "KG"
     optional: bool = False
-    notes: Optional[str] = ""
+    process_notes: Optional[str] = ""
+    batch_notes: Optional[str] = ""
 
 @formulas_router.get("")
 async def list_formulas(user: dict = Depends(get_current_user)):
-    """List all formulas (placeholder for future BOM)"""
+    """List all formulas with recipe_required flag"""
     formulas = await db.formulas.find({}, {"_id": 0}).to_list(1000)
     return formulas
 
 @formulas_router.post("")
 async def create_formula(data: FormulaCreate, user: dict = Depends(require_roles(["Admin", "Production"]))):
-    """Create a new formula (placeholder)"""
+    """Create a new formula with recipe_required toggle"""
     formula = {
         "id": generate_id(),
         "name": data.name,
         "description": data.description or "",
         "product_id": data.product_id,
+        "category": data.category or "",
         "default_batch_size": data.default_batch_size,
         "batch_unit": data.batch_unit,
+        "recipe_required": data.recipe_required,
+        "variance_tolerance_percent": data.variance_tolerance_percent,
         "status": "Active",
         "tags": data.tags or [],
         "created_at": get_timestamp(),
@@ -2793,6 +2803,28 @@ async def create_formula(data: FormulaCreate, user: dict = Depends(require_roles
     await db.formulas.insert_one(formula)
     formula.pop("_id", None)
     return formula
+
+@formulas_router.put("/{formula_id}")
+async def update_formula(formula_id: str, data: FormulaCreate, user: dict = Depends(require_roles(["Admin"]))):
+    """Update a formula including recipe_required toggle"""
+    result = await db.formulas.find_one_and_update(
+        {"id": formula_id},
+        {"$set": {
+            "name": data.name,
+            "description": data.description,
+            "product_id": data.product_id,
+            "category": data.category,
+            "default_batch_size": data.default_batch_size,
+            "batch_unit": data.batch_unit,
+            "recipe_required": data.recipe_required,
+            "variance_tolerance_percent": data.variance_tolerance_percent,
+            "tags": data.tags
+        }},
+        return_document=True
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Formula not found")
+    return {k: v for k, v in result.items() if k != "_id"}
 
 @formulas_router.get("/{formula_id}")
 async def get_formula(formula_id: str, user: dict = Depends(get_current_user)):
