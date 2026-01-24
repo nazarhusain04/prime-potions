@@ -785,6 +785,136 @@ async def get_recipe(recipe_id: str):
         raise HTTPException(status_code=404, detail="Recipe not found")
     return RecipeResponse(**r)
 
+# Units of Measure - Expanded UOM support
+DEFAULT_UOMS = [
+    # Mass
+    {"code": "KG", "name": "Kilogram", "category": "mass", "base_unit": "KG", "conversion_factor": 1.0},
+    {"code": "G", "name": "Gram", "category": "mass", "base_unit": "KG", "conversion_factor": 0.001},
+    {"code": "MG", "name": "Milligram", "category": "mass", "base_unit": "KG", "conversion_factor": 0.000001},
+    {"code": "LB", "name": "Pound", "category": "mass", "base_unit": "KG", "conversion_factor": 0.453592},
+    {"code": "OZ", "name": "Ounce (weight)", "category": "mass", "base_unit": "KG", "conversion_factor": 0.0283495, "aliases": ["ounce", "oz"]},
+    # Volume
+    {"code": "L", "name": "Liter", "category": "volume", "base_unit": "L", "conversion_factor": 1.0},
+    {"code": "ML", "name": "Milliliter", "category": "volume", "base_unit": "L", "conversion_factor": 0.001},
+    {"code": "GAL", "name": "Gallon", "category": "volume", "base_unit": "L", "conversion_factor": 3.78541},
+    {"code": "FL_OZ", "name": "Fluid Ounce", "category": "volume", "base_unit": "L", "conversion_factor": 0.0295735, "aliases": ["fl oz", "fl. oz", "fluid ounce"]},
+    # Count
+    {"code": "EA", "name": "Each", "category": "count", "base_unit": "EA", "conversion_factor": 1.0, "aliases": ["each", "unit", "units", "pcs", "pc"]},
+    {"code": "PCS", "name": "Pieces", "category": "count", "base_unit": "EA", "conversion_factor": 1.0},
+    {"code": "CASE", "name": "Case", "category": "count", "base_unit": "EA", "conversion_factor": 1.0},
+    {"code": "BOX", "name": "Box", "category": "count", "base_unit": "EA", "conversion_factor": 1.0},
+]
+
+@master_router.get("/uom")
+async def list_units_of_measure(user: dict = Depends(get_current_user)):
+    """List all units of measure including custom ones"""
+    # Get custom UOMs from DB
+    custom_uoms = await db.units_of_measure.find({}, {"_id": 0}).to_list(100)
+    
+    # Combine with defaults
+    all_uoms = DEFAULT_UOMS.copy()
+    for custom in custom_uoms:
+        if not any(u["code"] == custom["code"] for u in all_uoms):
+            all_uoms.append(custom)
+    
+    return {"uoms": all_uoms}
+
+@master_router.post("/uom")
+async def create_unit_of_measure(
+    code: str,
+    name: str,
+    category: str = "custom",
+    base_unit: str = "EA",
+    conversion_factor: float = 1.0,
+    aliases: Optional[List[str]] = None,
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """Create a custom unit of measure (ADMIN ONLY)"""
+    existing = await db.units_of_measure.find_one({"code": code.upper()})
+    if existing:
+        raise HTTPException(status_code=400, detail="UOM code already exists")
+    
+    uom = {
+        "id": generate_id(),
+        "code": code.upper(),
+        "name": name,
+        "category": category,
+        "base_unit": base_unit.upper(),
+        "conversion_factor": conversion_factor,
+        "aliases": aliases or [],
+        "created_at": get_timestamp()
+    }
+    await db.units_of_measure.insert_one(uom)
+    uom.pop("_id", None)
+    return uom
+
+@master_router.get("/uom/resolve/{uom_text}")
+async def resolve_uom(uom_text: str, user: dict = Depends(get_current_user)):
+    """Resolve a UOM text (including aliases) to standard code"""
+    text = uom_text.strip().upper()
+    
+    # Check default UOMs
+    for uom in DEFAULT_UOMS:
+        if uom["code"] == text:
+            return {"resolved": uom["code"], "uom": uom}
+        if "aliases" in uom and text.lower() in [a.lower() for a in uom.get("aliases", [])]:
+            return {"resolved": uom["code"], "uom": uom}
+    
+    # Check custom UOMs
+    custom = await db.units_of_measure.find_one(
+        {"$or": [{"code": text}, {"aliases": {"$in": [uom_text.lower()]}}]},
+        {"_id": 0}
+    )
+    if custom:
+        return {"resolved": custom["code"], "uom": custom}
+    
+    # Not found - return as-is
+    return {"resolved": text, "uom": None, "warning": "UOM not recognized"}
+
+# Categories management
+@master_router.get("/categories")
+async def list_categories(type: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """List all categories"""
+    query = {}
+    if type:
+        query["type"] = type.upper()
+    
+    categories = await db.categories.find(query, {"_id": 0}).to_list(500)
+    
+    # Also get distinct from items
+    item_cats = await db.items.distinct("category")
+    item_subcats = await db.items.distinct("sub_category")
+    
+    all_cats = list(set([c["name"] for c in categories] + [c for c in item_cats if c] + [c for c in item_subcats if c]))
+    all_cats.sort()
+    
+    return {"categories": categories, "all_category_names": all_cats}
+
+@master_router.post("/categories")
+async def create_category(
+    name: str,
+    type: str = "ALL",
+    parent_id: Optional[str] = None,
+    description: Optional[str] = None,
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """Create a new category (ADMIN ONLY)"""
+    existing = await db.categories.find_one({"name": name, "type": type.upper()})
+    if existing:
+        raise HTTPException(status_code=400, detail="Category already exists")
+    
+    category = {
+        "id": generate_id(),
+        "name": name,
+        "type": type.upper(),
+        "parent_id": parent_id,
+        "description": description or "",
+        "created_at": get_timestamp()
+    }
+    await db.categories.insert_one(category)
+    category.pop("_id", None)
+    return category
+
 # ============ INVENTORY ROUTES ============
 
 @inventory_router.post("/transactions", response_model=InventoryTransactionResponse)
