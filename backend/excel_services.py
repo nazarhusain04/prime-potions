@@ -1,514 +1,659 @@
 """
 Excel Services for Prime Potions ERP
-Handles Excel import/export, batching sheets, and mapping configurations
+Handles Excel import/export with EXACT Prime Potions template matching
 """
 import io
 import uuid
 import pandas as pd
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment, Protection
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils import get_column_letter
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import hashlib
 import json
-
-# Standard field mappings for Prime Potions Excel files
-DEFAULT_RAW_MATERIAL_MAPPINGS = {
-    "item_code": ["ITEM CODE", "Item Code", "SKU", "Code", "ItemCode"],
-    "name": ["Ingredient Name", "Name", "INCI NAME", "Material Name", "Item Name"],
-    "supplier": ["SUPPLIER", "Supplier", "Vendor"],
-    "lot_number": ["LOT #", "Lot Number", "LOT", "Lot #", "Lot"],
-    "expiry_date": ["EXPIRY / RETEST Date", "Expiry Date", "Expiry", "Retest Date"],
-    "manufacturer": ["VENDOR / MANUFACTURER", "Manufacturer", "Vendor / Manufacturer"],
-    "inci_name": ["INCI NAME", "INCI", "Scientific Name"],
-    "location": ["Primary Inv Zone", "Storage location", "Location", "Zone"],
-    "quantity_on_hand": ["Inventory on Hand", "On Hand", "QTY", "Quantity", "Stock"],
-    "container_type": ["Container Type", "Container", "Packaging"],
-    "uom": ["UoM", "UOM", "Unit", "Unit of Measure"],
-    "notes": ["Notes", "Comments", "Remarks"],
-    "minimum_stock": ["Safety Stock", "Minimum Stock", "Min Stock", "Reorder Point"],
-    "category": ["Class", "Category", "sub category", "Type"],
-    "cost_per_unit": ["Cost/unit", "Cost", "Unit Cost", "Price"]
-}
-
-DEFAULT_PACKAGING_MAPPINGS = {
-    "item_code": ["Item Code", "SKU", "Code"],
-    "name": ["Item Name", "Name", "Description"],
-    "category": ["category", "Category", "Type"],
-    "sub_category": ["sub category", "Sub Category", "Subcategory"],
-    "client": ["Client", "Customer"],
-    "supplier": ["Supplier", "Vendor"],
-    "size_specs": ["Size or Specs", "Size", "Specs", "Specifications"],
-    "uom": ["UOM", "UoM", "Unit"],
-    "quantity_on_hand": ["On Hand", "Stock", "Quantity"],
-    "location": ["Storage location", "Location"],
-    "minimum_stock": ["Minimum Stock", "Min Stock"],
-    "stock_status": ["Stock Status", "Status"]
-}
-
-DEFAULT_BATCHING_MAPPINGS = {
-    "ingredient": ["Ingredient", "Material", "Raw Material", "Item"],
-    "formula_phase": ["Formula", "Phase", "Process Phase"],
-    "inv_location": ["Inv Loc.", "Location", "Storage"],
-    "qty_required": ["Qty Required", "Required Qty", "Quantity Required"],
-    "add_order": ["Add Order", "Order", "PO Required"],
-    "added_kg": ["Added Kg", "Actual Kg", "Qty Added"],
-    "sum_total": ["Sum", "Running Total", "Cumulative"],
-    "process_notes": ["Process Notes", "Notes", "Instructions"],
-    "batch_notes": ["Batch Notes", "Batch Comments"],
-    "qty_on_hand": ["Qty on Hand (kg)", "On Hand", "Available"],
-    "percent_qty": ["ENTER % QTY HERE", "Percentage", "%", "Pct"]
-}
-
+import re
 
 def generate_id():
     return str(uuid.uuid4())
 
-
 def get_timestamp():
     return datetime.now(timezone.utc).isoformat()
 
+# =============================================================================
+# PRIME POTIONS EXACT TEMPLATE DEFINITIONS
+# =============================================================================
 
-def compute_row_hash(row_data: dict) -> str:
-    """Compute hash of row data for change detection"""
-    serialized = json.dumps(row_data, sort_keys=True, default=str)
-    return hashlib.md5(serialized.encode()).hexdigest()
+# RAW MATERIALS - Sheet: "RAW-MASTER INV"
+# Headers with EXACT spelling/spacing/newlines
+RAW_MATERIAL_HEADERS = [
+    "ITEM CODE",
+    "INTERNAL LOT #\n(Item code-YYMMDD)",
+    "Ingredient Name",
+    "SUPPLIER LOT #",
+    "Tracking key",
+    "Opening stock",
+    "Inventory on hand",
+    "EXPIRY / RETEST Date",
+    "VENDOR / MANUFACTURER",
+    "INCI NAME",
+    "Primary Inv Zone",
+    "2ND\nInv Zone",
+    "CoA\n(Yes/No)",
+    "Container Type",
+    "Column2",
+    "UoM",
+    "Notes",
+    "Minimum stock",
+    "Stock status"
+]
+
+RAW_MATERIAL_FIELD_MAP = {
+    "ITEM CODE": "sku",
+    "INTERNAL LOT #\n(Item code-YYMMDD)": "internal_lot",
+    "Ingredient Name": "name",
+    "SUPPLIER LOT #": "supplier_lot",
+    "Tracking key": "tracking_key",
+    "Opening stock": "opening_stock",
+    "Inventory on hand": "on_hand",
+    "EXPIRY / RETEST Date": "expiry_date",
+    "VENDOR / MANUFACTURER": "manufacturer",
+    "INCI NAME": "inci_name",
+    "Primary Inv Zone": "location",
+    "2ND\nInv Zone": "secondary_location",
+    "CoA\n(Yes/No)": "coa_status",
+    "Container Type": "container_type",
+    "Column2": "custom_column2",
+    "UoM": "unit_of_measure",
+    "Notes": "notes",
+    "Minimum stock": "min_stock_level",
+    "Stock status": "stock_status"
+}
+
+# PACKAGING - Sheet: "Master inventory-Packaging"
+PACKAGING_HEADERS = [
+    "Item Name",
+    "sub category",
+    "category",
+    "Client",
+    "Supplier",
+    "Size or Specs",
+    "UOM",
+    "Opening  Stock",
+    "On Hand",
+    "Active",
+    "Storage location",
+    "Minimum Stock",
+    "Stock Status"
+]
+
+PACKAGING_FIELD_MAP = {
+    "Item Name": "name",
+    "sub category": "sub_category",
+    "category": "category",
+    "Client": "client",
+    "Supplier": "supplier",
+    "Size or Specs": "size_specs",
+    "UOM": "unit_of_measure",
+    "Opening  Stock": "opening_stock",
+    "On Hand": "on_hand",
+    "Active": "is_active",
+    "Storage location": "location",
+    "Minimum Stock": "min_stock_level",
+    "Stock Status": "stock_status"
+}
+
+# BATCHING - Sheet: "Batching Sheet" - Header row 4
+# Columns A-N in EXACT order including blanks
+BATCHING_HEADERS = [
+    "Ingredient Formula",      # A
+    "Inv Loc.",                 # B
+    "Qty Required",             # C
+    "Add Order",                # D
+    "Added",                    # E
+    "Kg Sum",                   # F
+    "Process Notes",            # G
+    "Batch Notes",              # H
+    "",                         # I - BLANK
+    "Qty on Hand (kg)",         # J
+    "ENTER % QTY HERE",         # K
+    "",                         # L - BLANK
+    "",                         # M - BLANK
+    "Enter individual Quantities, per item from Trevor's sheet below"  # N
+]
+
+BATCHING_FIELD_MAP = {
+    "Ingredient Formula": "ingredient_name",
+    "Inv Loc.": "location",
+    "Qty Required": "qty_required",
+    "Add Order": "add_order",
+    "Added": "actual_qty",
+    "Kg Sum": "running_total",
+    "Process Notes": "process_notes",
+    "Batch Notes": "batch_notes",
+    "Qty on Hand (kg)": "qty_on_hand",
+    "ENTER % QTY HERE": "percent_qty"
+}
 
 
-def fuzzy_match_column(column_name: str, mappings: Dict[str, List[str]]) -> Optional[str]:
-    """Find the best matching standard field for a column name"""
-    col_lower = column_name.lower().strip()
+class PrimePotionsExcelService:
+    """
+    Excel service that generates/parses files matching Prime Potions' exact templates
+    """
     
-    for standard_field, aliases in mappings.items():
-        for alias in aliases:
-            if alias.lower() == col_lower:
-                return standard_field
-    
-    # Partial match
-    for standard_field, aliases in mappings.items():
-        for alias in aliases:
-            if alias.lower() in col_lower or col_lower in alias.lower():
-                return standard_field
-    
-    return None
-
-
-class ExcelService:
-    """Service for handling Excel operations"""
+    # Styles
+    HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
+    HEADER_FILL = PatternFill(start_color="0F5132", end_color="0F5132", fill_type="solid")
+    THIN_BORDER = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
     
     @staticmethod
-    def analyze_workbook(file_content: bytes) -> Dict[str, Any]:
-        """Analyze an Excel workbook and return its structure"""
-        wb = load_workbook(io.BytesIO(file_content), data_only=True)
+    def generate_raw_materials_excel(items: List[Dict], inventory_data: List[Dict]) -> bytes:
+        """
+        Generate Raw Materials Excel with exact Prime Potions headers
+        Sheet name: RAW-MASTER INV
+        """
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "RAW-MASTER INV"
         
-        analysis = {
-            "sheet_count": len(wb.sheetnames),
-            "sheets": []
-        }
+        # Write headers
+        for col_idx, header in enumerate(RAW_MATERIAL_HEADERS, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.font = PrimePotionsExcelService.HEADER_FONT
+            cell.fill = PrimePotionsExcelService.HEADER_FILL
+            cell.border = PrimePotionsExcelService.THIN_BORDER
+            cell.alignment = Alignment(wrap_text=True, vertical='center')
         
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
+        # Create inventory lookup by item_id
+        inv_by_item = {}
+        for inv in inventory_data:
+            item_id = inv.get("item_id")
+            if item_id not in inv_by_item:
+                inv_by_item[item_id] = []
+            inv_by_item[item_id].append(inv)
+        
+        # Write data rows
+        row_idx = 2
+        for item in items:
+            item_id = item.get("id")
+            item_inv = inv_by_item.get(item_id, [{}])
             
-            # Get headers from first row
-            headers = []
-            for cell in ws[1]:
-                if cell.value:
-                    headers.append(str(cell.value))
-            
-            # Get row count
-            row_count = ws.max_row - 1  # Exclude header
-            
-            # Sample first 5 data rows
-            sample_data = []
-            for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=6, values_only=True), start=1):
-                row_dict = {}
-                for col_idx, value in enumerate(row):
-                    if col_idx < len(headers):
-                        row_dict[headers[col_idx]] = value
-                sample_data.append(row_dict)
-            
-            analysis["sheets"].append({
-                "name": sheet_name,
-                "headers": headers,
-                "row_count": row_count,
-                "sample_data": sample_data
-            })
-        
-        return analysis
-    
-    @staticmethod
-    def suggest_mappings(headers: List[str], mapping_type: str = "raw_material") -> Dict[str, str]:
-        """Suggest field mappings for given headers"""
-        if mapping_type == "raw_material":
-            mappings = DEFAULT_RAW_MATERIAL_MAPPINGS
-        elif mapping_type == "packaging":
-            mappings = DEFAULT_PACKAGING_MAPPINGS
-        elif mapping_type == "batching":
-            mappings = DEFAULT_BATCHING_MAPPINGS
-        else:
-            mappings = DEFAULT_RAW_MATERIAL_MAPPINGS
-        
-        suggestions = {}
-        for header in headers:
-            match = fuzzy_match_column(header, mappings)
-            if match:
-                suggestions[header] = match
-            else:
-                suggestions[header] = None  # No match found
-        
-        return suggestions
-    
-    @staticmethod
-    def parse_excel_to_records(
-        file_content: bytes,
-        sheet_name: str,
-        field_mappings: Dict[str, str]
-    ) -> List[Dict[str, Any]]:
-        """Parse Excel sheet to list of records using field mappings"""
-        wb = load_workbook(io.BytesIO(file_content), data_only=True)
-        ws = wb[sheet_name]
-        
-        # Get headers
-        headers = [str(cell.value) if cell.value else f"col_{i}" for i, cell in enumerate(ws[1])]
-        
-        records = []
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            record = {"_raw": {}}
-            for col_idx, value in enumerate(row):
-                if col_idx < len(headers):
-                    original_header = headers[col_idx]
-                    record["_raw"][original_header] = value
+            # If multiple lots, create row per lot; otherwise single row
+            if item_inv:
+                for lot_data in item_inv:
+                    ws.cell(row=row_idx, column=1, value=item.get("sku", ""))
+                    ws.cell(row=row_idx, column=2, value=lot_data.get("lot_number", ""))
+                    ws.cell(row=row_idx, column=3, value=item.get("name", ""))
+                    ws.cell(row=row_idx, column=4, value=item.get("supplier_lot", ""))
+                    ws.cell(row=row_idx, column=5, value=item.get("tracking_key", ""))
+                    ws.cell(row=row_idx, column=6, value=item.get("opening_stock", 0))
+                    ws.cell(row=row_idx, column=7, value=lot_data.get("quantity_on_hand", 0))
+                    ws.cell(row=row_idx, column=8, value=item.get("expiry_date", ""))
+                    ws.cell(row=row_idx, column=9, value=item.get("manufacturer", ""))
+                    ws.cell(row=row_idx, column=10, value=item.get("inci_name", ""))
+                    ws.cell(row=row_idx, column=11, value=item.get("location", ""))
+                    ws.cell(row=row_idx, column=12, value=item.get("secondary_location", ""))
+                    ws.cell(row=row_idx, column=13, value=item.get("coa_status", ""))
+                    ws.cell(row=row_idx, column=14, value=item.get("container_type", ""))
+                    ws.cell(row=row_idx, column=15, value=item.get("custom_column2", ""))
+                    ws.cell(row=row_idx, column=16, value=item.get("unit_of_measure", "KG"))
+                    ws.cell(row=row_idx, column=17, value=item.get("notes", ""))
+                    ws.cell(row=row_idx, column=18, value=item.get("min_stock_level", 0))
                     
-                    # Map to standard field
-                    if original_header in field_mappings and field_mappings[original_header]:
-                        standard_field = field_mappings[original_header]
-                        record[standard_field] = value
-            
-            # Only add non-empty records
-            if any(v for k, v in record.items() if k != "_raw" and v is not None):
-                records.append(record)
+                    # Stock status calculation
+                    on_hand = lot_data.get("quantity_on_hand", 0) or 0
+                    min_stock = item.get("min_stock_level", 0) or 0
+                    if on_hand <= 0:
+                        status = "OUT OF STOCK"
+                    elif min_stock > 0 and on_hand < min_stock:
+                        status = "LOW STOCK"
+                    else:
+                        status = "IN STOCK"
+                    ws.cell(row=row_idx, column=19, value=status)
+                    row_idx += 1
+            else:
+                # No inventory data, still show item
+                ws.cell(row=row_idx, column=1, value=item.get("sku", ""))
+                ws.cell(row=row_idx, column=3, value=item.get("name", ""))
+                ws.cell(row=row_idx, column=9, value=item.get("manufacturer", ""))
+                ws.cell(row=row_idx, column=10, value=item.get("inci_name", ""))
+                ws.cell(row=row_idx, column=11, value=item.get("location", ""))
+                ws.cell(row=row_idx, column=16, value=item.get("unit_of_measure", "KG"))
+                ws.cell(row=row_idx, column=18, value=item.get("min_stock_level", 0))
+                ws.cell(row=row_idx, column=19, value="NO INVENTORY")
+                row_idx += 1
         
-        return records
+        # Auto-width columns
+        for col_idx in range(1, len(RAW_MATERIAL_HEADERS) + 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = 15
+        
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return output.getvalue()
+    
+    @staticmethod
+    def generate_packaging_excel(items: List[Dict], inventory_data: List[Dict]) -> bytes:
+        """
+        Generate Packaging Excel with exact Prime Potions headers
+        Sheet name: Master inventory-Packaging
+        """
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Master inventory-Packaging"
+        
+        # Write headers
+        for col_idx, header in enumerate(PACKAGING_HEADERS, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.font = PrimePotionsExcelService.HEADER_FONT
+            cell.fill = PrimePotionsExcelService.HEADER_FILL
+            cell.border = PrimePotionsExcelService.THIN_BORDER
+        
+        # Create inventory lookup
+        inv_by_item = {}
+        for inv in inventory_data:
+            item_id = inv.get("item_id")
+            if item_id not in inv_by_item:
+                inv_by_item[item_id] = {"total": 0}
+            inv_by_item[item_id]["total"] += inv.get("quantity_on_hand", 0)
+        
+        # Write data rows
+        row_idx = 2
+        for item in items:
+            item_id = item.get("id")
+            inv_total = inv_by_item.get(item_id, {}).get("total", 0)
+            
+            ws.cell(row=row_idx, column=1, value=item.get("name", ""))
+            ws.cell(row=row_idx, column=2, value=item.get("sub_category", ""))
+            ws.cell(row=row_idx, column=3, value=item.get("category", ""))
+            ws.cell(row=row_idx, column=4, value=item.get("client", ""))
+            ws.cell(row=row_idx, column=5, value=item.get("supplier", ""))
+            ws.cell(row=row_idx, column=6, value=item.get("size_specs", ""))
+            ws.cell(row=row_idx, column=7, value=item.get("unit_of_measure", "EA"))
+            ws.cell(row=row_idx, column=8, value=item.get("opening_stock", 0))
+            ws.cell(row=row_idx, column=9, value=inv_total)
+            ws.cell(row=row_idx, column=10, value="Yes" if item.get("is_active", True) else "No")
+            ws.cell(row=row_idx, column=11, value=item.get("location", ""))
+            ws.cell(row=row_idx, column=12, value=item.get("min_stock_level", 0))
+            
+            # Stock status
+            min_stock = item.get("min_stock_level", 0) or 0
+            if inv_total <= 0:
+                status = "OUT OF STOCK"
+            elif min_stock > 0 and inv_total < min_stock:
+                status = "LOW STOCK"
+            else:
+                status = "IN STOCK"
+            ws.cell(row=row_idx, column=13, value=status)
+            row_idx += 1
+        
+        # Auto-width
+        for col_idx in range(1, len(PACKAGING_HEADERS) + 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = 15
+        
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return output.getvalue()
     
     @staticmethod
     def generate_batching_template(
         batch_info: Dict[str, Any],
-        ingredients: List[Dict[str, Any]],
-        inventory_snapshot: List[Dict[str, Any]]
+        formula_lines: List[Dict[str, Any]],
+        inventory_lookup: List[Dict[str, Any]]
     ) -> bytes:
-        """Generate a batching Excel template with inventory snapshot"""
+        """
+        Generate Batching Excel with exact Prime Potions format
+        - Sheet: "Batching Sheet" with header row 4
+        - Sheet: "Do not change - Import range fr" for VLOOKUP support
+        """
         wb = Workbook()
         
-        # Styles
-        header_font = Font(bold=True, color="FFFFFF")
-        header_fill = PatternFill(start_color="0F5132", end_color="0F5132", fill_type="solid")
-        thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
+        # ============ BATCHING SHEET ============
+        ws_batch = wb.active
+        ws_batch.title = "Batching Sheet"
         
-        # ============ README Sheet ============
-        ws_readme = wb.active
-        ws_readme.title = "README_Batching"
-        readme_content = [
-            ["PRIME POTIONS BATCHING SHEET"],
-            [""],
-            ["Instructions:"],
-            ["1. Review the BatchHeader sheet and update batch information"],
-            ["2. In BatchIngredients, enter ACTUAL quantities used in 'actual_qty' column"],
-            ["3. Assign lot codes used in 'lot_code_used' column (or use LotSplit sheet for multiple lots)"],
-            ["4. InventorySnapshot is read-only - shows current available inventory"],
-            ["5. Upload this completed file to ERP to record batch consumption"],
-            [""],
-            ["Generated:", get_timestamp()],
-            ["Batch ID:", batch_info.get("batch_id", "")],
-            ["Batch Code:", batch_info.get("batch_code", "")]
-        ]
-        for row in readme_content:
-            ws_readme.append(row)
-        ws_readme["A1"].font = Font(bold=True, size=16)
+        # Title rows (1-3)
+        ws_batch.cell(row=1, column=1, value=f"BATCH: {batch_info.get('batch_code', '')}")
+        ws_batch.cell(row=1, column=1).font = Font(bold=True, size=14)
+        ws_batch.cell(row=2, column=1, value=f"Product: {batch_info.get('product_name', batch_info.get('formula_name', ''))}")
+        ws_batch.cell(row=2, column=3, value=f"Target Size: {batch_info.get('planned_qty', '')} {batch_info.get('batch_unit', 'KG')}")
+        ws_batch.cell(row=3, column=1, value=f"Date: {batch_info.get('batch_date', datetime.now().strftime('%Y-%m-%d'))}")
         
-        # ============ BatchHeader Sheet ============
-        ws_header = wb.create_sheet("BatchHeader")
-        header_fields = [
-            ("batch_id", batch_info.get("batch_id", generate_id())),
-            ("batch_code", batch_info.get("batch_code", "")),
-            ("product_or_formula_name", batch_info.get("formula_name", "")),
-            ("planned_batch_size", batch_info.get("planned_qty", 0)),
-            ("actual_batch_size", ""),  # To be filled
-            ("batch_size_unit", batch_info.get("batch_unit", "KG")),
-            ("planned_start_date", batch_info.get("planned_start", "")),
-            ("actual_end_date", ""),  # To be filled
-            ("status", "Planned"),
-            ("notes", batch_info.get("notes", ""))
-        ]
+        # Header row 4 - EXACT columns A-N
+        for col_idx, header in enumerate(BATCHING_HEADERS, 1):
+            cell = ws_batch.cell(row=4, column=col_idx, value=header)
+            cell.font = PrimePotionsExcelService.HEADER_FONT
+            cell.fill = PrimePotionsExcelService.HEADER_FILL
+            cell.border = PrimePotionsExcelService.THIN_BORDER
+            cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal='center')
         
-        ws_header.append(["Field", "Value"])
-        ws_header["A1"].font = header_font
-        ws_header["A1"].fill = header_fill
-        ws_header["B1"].font = header_font
-        ws_header["B1"].fill = header_fill
+        # Build inventory lookup dict
+        inv_lookup = {}
+        for inv in inventory_lookup:
+            name = inv.get("name", "").strip()
+            if name:
+                if name not in inv_lookup:
+                    inv_lookup[name] = {"location": inv.get("location", ""), "qty": 0}
+                inv_lookup[name]["qty"] += inv.get("quantity_on_hand", 0)
         
-        for field, value in header_fields:
-            ws_header.append([field, value])
+        # Write formula lines starting row 5
+        row_idx = 5
+        running_total = 0
+        for line in formula_lines:
+            ingredient_name = line.get("ingredient_display_name", line.get("name", ""))
+            qty_required = line.get("default_qty_required", line.get("qty_required", 0)) or 0
+            
+            # Get on-hand from lookup
+            inv_data = inv_lookup.get(ingredient_name, {"location": "", "qty": 0})
+            
+            running_total += qty_required
+            
+            ws_batch.cell(row=row_idx, column=1, value=ingredient_name)  # A: Ingredient Formula
+            ws_batch.cell(row=row_idx, column=2, value=inv_data["location"])  # B: Inv Loc.
+            ws_batch.cell(row=row_idx, column=3, value=qty_required)  # C: Qty Required
+            ws_batch.cell(row=row_idx, column=4, value=line.get("add_order", ""))  # D: Add Order
+            ws_batch.cell(row=row_idx, column=5, value="")  # E: Added (user fills)
+            ws_batch.cell(row=row_idx, column=6, value=running_total)  # F: Kg Sum
+            ws_batch.cell(row=row_idx, column=7, value=line.get("process_notes", ""))  # G: Process Notes
+            ws_batch.cell(row=row_idx, column=8, value=line.get("batch_notes", ""))  # H: Batch Notes
+            ws_batch.cell(row=row_idx, column=9, value="")  # I: BLANK
+            ws_batch.cell(row=row_idx, column=10, value=inv_data["qty"])  # J: Qty on Hand (kg)
+            ws_batch.cell(row=row_idx, column=11, value=line.get("percent", ""))  # K: % QTY
+            # L, M, N are blank or info columns
+            
+            row_idx += 1
         
-        ws_header.column_dimensions["A"].width = 25
-        ws_header.column_dimensions["B"].width = 40
+        # Add FINISH WT row
+        ws_batch.cell(row=row_idx, column=1, value="FINISH WT")
+        ws_batch.cell(row=row_idx, column=1).font = Font(bold=True)
+        ws_batch.cell(row=row_idx, column=5, value="")  # User enters actual finish weight
         
-        # ============ BatchIngredients Sheet ============
-        ws_ingredients = wb.create_sheet("BatchIngredients")
-        ingredient_headers = [
-            "row_id", "batch_id", "raw_material_sku", "raw_material_name", 
-            "uom", "formula_phase", "formula_percent", "planned_qty", "actual_qty", 
-            "variance_qty", "lot_code_used", "process_notes"
-        ]
+        # Column widths
+        col_widths = [25, 12, 12, 10, 10, 10, 20, 20, 5, 15, 15, 5, 5, 40]
+        for col_idx, width in enumerate(col_widths, 1):
+            ws_batch.column_dimensions[get_column_letter(col_idx)].width = width
         
-        ws_ingredients.append(ingredient_headers)
-        for col_idx, header in enumerate(ingredient_headers, 1):
-            cell = ws_ingredients.cell(row=1, column=col_idx)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.border = thin_border
+        # ============ HELPER SHEET FOR VLOOKUP ============
+        ws_lookup = wb.create_sheet("Do not change - Import range fr")
         
-        for ing in ingredients:
-            row_id = generate_id()
-            ws_ingredients.append([
-                row_id,
-                batch_info.get("batch_id", ""),
-                ing.get("sku", ""),
-                ing.get("name", ""),
-                ing.get("uom", "KG"),
-                ing.get("phase", ""),
-                ing.get("percent", 0),
-                ing.get("planned_qty", 0),
-                "",  # actual_qty - to be filled
-                f"=I{ws_ingredients.max_row + 1}-H{ws_ingredients.max_row + 1}",  # variance formula
-                "",  # lot_code_used - to be filled
-                ing.get("notes", "")
-            ])
+        # Headers for lookup: A=Ingredient, B=SKU, C=Location, D=UOM, E=Qty on Hand
+        lookup_headers = ["Ingredient Formula", "SKU", "Inv Loc", "UOM", "Qty on Hand (kg)"]
+        for col_idx, header in enumerate(lookup_headers, 1):
+            ws_lookup.cell(row=1, column=col_idx, value=header)
+            ws_lookup.cell(row=1, column=col_idx).font = Font(bold=True)
         
-        # Auto-width columns
-        for col_idx, header in enumerate(ingredient_headers, 1):
-            ws_ingredients.column_dimensions[get_column_letter(col_idx)].width = max(15, len(header) + 2)
+        # Populate lookup data
+        row_idx = 2
+        for inv in inventory_lookup:
+            ws_lookup.cell(row=row_idx, column=1, value=inv.get("name", ""))
+            ws_lookup.cell(row=row_idx, column=2, value=inv.get("sku", ""))
+            ws_lookup.cell(row=row_idx, column=3, value=inv.get("location", ""))
+            ws_lookup.cell(row=row_idx, column=4, value=inv.get("unit_of_measure", "KG"))
+            ws_lookup.cell(row=row_idx, column=5, value=inv.get("quantity_on_hand", 0))
+            row_idx += 1
         
-        # ============ LotSplit Sheet ============
-        ws_lotsplit = wb.create_sheet("LotSplit")
-        lotsplit_headers = ["split_id", "batch_id", "raw_material_sku", "lot_code", "qty_used"]
+        # Hide the lookup sheet (optional - keeps it accessible but not prominent)
+        ws_lookup.sheet_state = 'hidden'
         
-        ws_lotsplit.append(lotsplit_headers)
-        for col_idx, header in enumerate(lotsplit_headers, 1):
-            cell = ws_lotsplit.cell(row=1, column=col_idx)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.border = thin_border
-        
-        for col_idx, header in enumerate(lotsplit_headers, 1):
-            ws_lotsplit.column_dimensions[get_column_letter(col_idx)].width = 20
-        
-        # ============ InventorySnapshot Sheet ============
-        ws_inventory = wb.create_sheet("InventorySnapshot")
-        inventory_headers = ["sku", "name", "lot_code", "location", "available_qty", "uom", "status", "expiry_date"]
-        
-        ws_inventory.append(inventory_headers)
-        for col_idx, header in enumerate(inventory_headers, 1):
-            cell = ws_inventory.cell(row=1, column=col_idx)
-            cell.font = header_font
-            cell.fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
-            cell.border = thin_border
-        
-        for item in inventory_snapshot:
-            ws_inventory.append([
-                item.get("sku", ""),
-                item.get("name", ""),
-                item.get("lot_number", ""),
-                item.get("location", ""),
-                item.get("quantity_available", 0),
-                item.get("uom", ""),
-                item.get("status", ""),
-                item.get("expiry_date", "")
-            ])
-        
-        for col_idx, header in enumerate(inventory_headers, 1):
-            ws_inventory.column_dimensions[get_column_letter(col_idx)].width = max(15, len(header) + 2)
-        
-        # Protect InventorySnapshot sheet (read-only)
-        ws_inventory.protection.sheet = True
-        
-        # Save to bytes
         output = io.BytesIO()
         wb.save(output)
         output.seek(0)
         return output.getvalue()
     
     @staticmethod
-    def parse_batching_sheet(file_content: bytes) -> Dict[str, Any]:
-        """Parse a completed batching sheet upload"""
+    def parse_batching_upload(file_content: bytes) -> Dict[str, Any]:
+        """
+        Parse uploaded batching sheet (Prime Potions format)
+        Reads from row 5 until blank Ingredient Formula
+        """
         wb = load_workbook(io.BytesIO(file_content), data_only=True)
         
         result = {
-            "batch_header": {},
+            "batch_info": {},
             "ingredients": [],
-            "lot_splits": [],
-            "validation_errors": [],
-            "warnings": []
+            "finish_weight": None,
+            "warnings": [],
+            "errors": []
         }
         
-        # Parse BatchHeader
-        if "BatchHeader" in wb.sheetnames:
-            ws = wb["BatchHeader"]
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                if row[0] and row[1] is not None:
-                    result["batch_header"][row[0]] = row[1]
+        # Find Batching Sheet
+        sheet_name = None
+        for name in wb.sheetnames:
+            if "batch" in name.lower():
+                sheet_name = name
+                break
         
-        # Parse BatchIngredients
-        if "BatchIngredients" in wb.sheetnames:
-            ws = wb["BatchIngredients"]
-            headers = [str(cell.value) if cell.value else f"col_{i}" for i, cell in enumerate(ws[1])]
-            
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                ing = {}
-                for col_idx, value in enumerate(row):
-                    if col_idx < len(headers):
-                        ing[headers[col_idx]] = value
-                
-                if ing.get("raw_material_sku"):
-                    # Validate required fields
-                    if ing.get("actual_qty") is None:
-                        result["warnings"].append(f"Missing actual_qty for {ing.get('raw_material_name', 'unknown')}")
-                    if not ing.get("lot_code_used"):
-                        result["warnings"].append(f"Missing lot_code for {ing.get('raw_material_name', 'unknown')}")
-                    
-                    result["ingredients"].append(ing)
+        if not sheet_name:
+            result["errors"].append("Could not find batching sheet")
+            return result
         
-        # Parse LotSplit
-        if "LotSplit" in wb.sheetnames:
-            ws = wb["LotSplit"]
-            headers = [str(cell.value) if cell.value else f"col_{i}" for i, cell in enumerate(ws[1])]
+        ws = wb[sheet_name]
+        
+        # Parse title info from rows 1-3
+        batch_code_cell = ws.cell(row=1, column=1).value or ""
+        if "BATCH:" in str(batch_code_cell):
+            result["batch_info"]["batch_code"] = batch_code_cell.replace("BATCH:", "").strip()
+        
+        product_cell = ws.cell(row=2, column=1).value or ""
+        if "Product:" in str(product_cell):
+            result["batch_info"]["product_name"] = product_cell.replace("Product:", "").strip()
+        
+        # Parse ingredients starting from row 5
+        row_idx = 5
+        while True:
+            ingredient = ws.cell(row=row_idx, column=1).value
+            if not ingredient or str(ingredient).strip() == "":
+                break
             
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                split = {}
-                for col_idx, value in enumerate(row):
-                    if col_idx < len(headers):
-                        split[headers[col_idx]] = value
-                
-                if split.get("lot_code") and split.get("qty_used"):
-                    result["lot_splits"].append(split)
+            ingredient_str = str(ingredient).strip()
+            
+            # Check for FINISH WT row
+            if ingredient_str.upper() == "FINISH WT":
+                result["finish_weight"] = ws.cell(row=row_idx, column=5).value
+                row_idx += 1
+                continue
+            
+            # Parse ingredient row
+            ing_data = {
+                "ingredient_name": ingredient_str,
+                "location": ws.cell(row=row_idx, column=2).value or "",
+                "qty_required": ws.cell(row=row_idx, column=3).value or 0,
+                "add_order": ws.cell(row=row_idx, column=4).value or "",
+                "actual_qty": ws.cell(row=row_idx, column=5).value,  # Added column
+                "kg_sum": ws.cell(row=row_idx, column=6).value or 0,
+                "process_notes": ws.cell(row=row_idx, column=7).value or "",
+                "batch_notes": ws.cell(row=row_idx, column=8).value or "",
+                "qty_on_hand": ws.cell(row=row_idx, column=10).value or 0,
+                "percent_qty": ws.cell(row=row_idx, column=11).value or ""
+            }
+            
+            # Convert qty values to float
+            try:
+                ing_data["qty_required"] = float(ing_data["qty_required"]) if ing_data["qty_required"] else 0
+            except:
+                ing_data["qty_required"] = 0
+            
+            try:
+                if ing_data["actual_qty"] is not None and ing_data["actual_qty"] != "":
+                    ing_data["actual_qty"] = float(ing_data["actual_qty"])
+                else:
+                    ing_data["actual_qty"] = None
+            except:
+                ing_data["actual_qty"] = None
+            
+            result["ingredients"].append(ing_data)
+            row_idx += 1
+            
+            if row_idx > 500:  # Safety limit
+                break
+        
+        # Convert finish weight
+        if result["finish_weight"]:
+            try:
+                result["finish_weight"] = float(result["finish_weight"])
+            except:
+                result["warnings"].append(f"Could not parse finish weight: {result['finish_weight']}")
+                result["finish_weight"] = None
         
         return result
     
     @staticmethod
-    def generate_master_data_template(template_type: str) -> bytes:
-        """Generate a template for master data import"""
+    def parse_raw_materials_import(file_content: bytes) -> Dict[str, Any]:
+        """Parse Raw Materials Excel import"""
+        wb = load_workbook(io.BytesIO(file_content), data_only=True)
+        
+        result = {
+            "items": [],
+            "errors": [],
+            "warnings": []
+        }
+        
+        # Find the right sheet
+        sheet_name = None
+        for name in wb.sheetnames:
+            if "raw" in name.lower() and "master" in name.lower():
+                sheet_name = name
+                break
+        if not sheet_name:
+            sheet_name = wb.sheetnames[0]
+        
+        ws = wb[sheet_name]
+        
+        # Get headers from row 1
+        headers = []
+        for col in range(1, ws.max_column + 1):
+            val = ws.cell(row=1, column=col).value
+            headers.append(str(val) if val else f"col_{col}")
+        
+        # Parse data rows
+        for row_idx in range(2, ws.max_row + 1):
+            row_data = {}
+            has_data = False
+            
+            for col_idx, header in enumerate(headers, 1):
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val is not None:
+                    has_data = True
+                
+                # Map header to field
+                field = RAW_MATERIAL_FIELD_MAP.get(header)
+                if field:
+                    row_data[field] = val
+                else:
+                    # Store as custom field
+                    row_data[f"custom_{header}"] = val
+            
+            if has_data and row_data.get("sku") or row_data.get("name"):
+                result["items"].append(row_data)
+        
+        return result
+    
+    @staticmethod
+    def parse_packaging_import(file_content: bytes) -> Dict[str, Any]:
+        """Parse Packaging Excel import"""
+        wb = load_workbook(io.BytesIO(file_content), data_only=True)
+        
+        result = {
+            "items": [],
+            "errors": [],
+            "warnings": []
+        }
+        
+        # Find the right sheet
+        sheet_name = None
+        for name in wb.sheetnames:
+            if "packaging" in name.lower() or "master" in name.lower():
+                sheet_name = name
+                break
+        if not sheet_name:
+            sheet_name = wb.sheetnames[0]
+        
+        ws = wb[sheet_name]
+        
+        # Get headers
+        headers = []
+        for col in range(1, ws.max_column + 1):
+            val = ws.cell(row=1, column=col).value
+            headers.append(str(val) if val else f"col_{col}")
+        
+        # Parse data rows
+        for row_idx in range(2, ws.max_row + 1):
+            row_data = {}
+            has_data = False
+            
+            for col_idx, header in enumerate(headers, 1):
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val is not None:
+                    has_data = True
+                
+                field = PACKAGING_FIELD_MAP.get(header)
+                if field:
+                    row_data[field] = val
+                else:
+                    row_data[f"custom_{header}"] = val
+            
+            if has_data and row_data.get("name"):
+                result["items"].append(row_data)
+        
+        return result
+
+
+class ExcelTemplateConfig:
+    """
+    Manages configurable Excel template mappings
+    Allows Admin to adjust column parsing without code changes
+    """
+    
+    DEFAULT_BATCHING_CONFIG = {
+        "template_key": "batching_prime_potions_v1",
+        "sheet_name": "Batching Sheet",
+        "header_row": 4,
+        "columns": [
+            {"key": "ingredient_name", "header": "Ingredient Formula", "col": "A", "required": True, "enabled": True},
+            {"key": "location", "header": "Inv Loc.", "col": "B", "required": False, "enabled": True},
+            {"key": "qty_required", "header": "Qty Required", "col": "C", "required": True, "enabled": True},
+            {"key": "add_order", "header": "Add Order", "col": "D", "required": False, "enabled": True},
+            {"key": "actual_qty", "header": "Added", "col": "E", "required": False, "enabled": True},
+            {"key": "kg_sum", "header": "Kg Sum", "col": "F", "required": False, "enabled": True},
+            {"key": "process_notes", "header": "Process Notes", "col": "G", "required": False, "enabled": True},
+            {"key": "batch_notes", "header": "Batch Notes", "col": "H", "required": False, "enabled": True},
+            {"key": "blank_1", "header": "", "col": "I", "required": False, "enabled": False},
+            {"key": "qty_on_hand", "header": "Qty on Hand (kg)", "col": "J", "required": False, "enabled": True},
+            {"key": "percent_qty", "header": "ENTER % QTY HERE", "col": "K", "required": False, "enabled": True},
+            {"key": "blank_2", "header": "", "col": "L", "required": False, "enabled": False},
+            {"key": "blank_3", "header": "", "col": "M", "required": False, "enabled": False},
+            {"key": "individual_qty", "header": "Enter individual Quantities, per item from Trevor's sheet below", "col": "N", "required": False, "enabled": False}
+        ]
+    }
+    
+    @staticmethod
+    def get_config_export_excel() -> bytes:
+        """Export template config as Excel for Admin editing"""
         wb = Workbook()
         ws = wb.active
+        ws.title = "BatchingColumns"
         
-        header_font = Font(bold=True, color="FFFFFF")
-        header_fill = PatternFill(start_color="0F5132", end_color="0F5132", fill_type="solid")
+        headers = ["col_letter", "header_text", "internal_key", "enabled", "required", "notes"]
+        for col_idx, h in enumerate(headers, 1):
+            ws.cell(row=1, column=col_idx, value=h)
+            ws.cell(row=1, column=col_idx).font = Font(bold=True)
         
-        if template_type == "raw_materials":
-            ws.title = "RawMaterials"
-            headers = ["item_code", "name", "inci_name", "supplier", "manufacturer", 
-                      "uom", "category", "location", "minimum_stock", "cost_per_unit", "notes"]
-            example = ["RM-001", "Aloe Vera Extract", "Aloe Barbadensis Leaf Juice", 
-                      "Supplier Co", "Manufacturer Inc", "KG", "Active", "9C", "10", "25.50", "Organic certified"]
-        elif template_type == "packaging":
-            ws.title = "PackagingMaterials"
-            headers = ["item_code", "name", "category", "sub_category", "client",
-                      "supplier", "size_specs", "uom", "location", "minimum_stock"]
-            example = ["PKG-001", "100ml Amber Bottle", "Bottle packaging", "Bottles",
-                      "PAUME", "Supplier Co", "100ml", "EA", "WH-01", "1000"]
-        elif template_type == "inventory_receipt":
-            ws.title = "InventoryReceipt"
-            headers = ["item_code", "item_type", "quantity", "lot_number", "location", "expiry_date", "notes"]
-            example = ["RM-001", "raw_material", "100", "", "WH-01", "2026-12-31", "Initial receipt"]
-        else:
-            ws.title = "Items"
-            headers = ["item_code", "name", "category", "uom", "notes"]
-            example = ["ITEM-001", "Example Item", "General", "EA", "Example notes"]
-        
-        ws.append(headers)
-        for col_idx, header in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col_idx)
-            cell.font = header_font
-            cell.fill = header_fill
-        
-        ws.append(example)
-        
-        # Auto-width
-        for col_idx, header in enumerate(headers, 1):
-            ws.column_dimensions[get_column_letter(col_idx)].width = max(15, len(header) + 5)
+        for row_idx, col_cfg in enumerate(ExcelTemplateConfig.DEFAULT_BATCHING_CONFIG["columns"], 2):
+            ws.cell(row=row_idx, column=1, value=col_cfg["col"])
+            ws.cell(row=row_idx, column=2, value=col_cfg["header"])
+            ws.cell(row=row_idx, column=3, value=col_cfg["key"])
+            ws.cell(row=row_idx, column=4, value="Yes" if col_cfg["enabled"] else "No")
+            ws.cell(row=row_idx, column=5, value="Yes" if col_cfg["required"] else "No")
+            ws.cell(row=row_idx, column=6, value="")
         
         output = io.BytesIO()
         wb.save(output)
         output.seek(0)
         return output.getvalue()
-
-
-class ImportPreviewService:
-    """Service for generating import previews with diff detection"""
-    
-    @staticmethod
-    async def generate_preview(
-        records: List[Dict[str, Any]],
-        existing_items: Dict[str, Dict[str, Any]],
-        key_field: str = "item_code"
-    ) -> Dict[str, Any]:
-        """Generate a preview of changes that would be made by import"""
-        preview = {
-            "create": [],
-            "update": [],
-            "unchanged": [],
-            "errors": [],
-            "summary": {
-                "total_records": len(records),
-                "to_create": 0,
-                "to_update": 0,
-                "unchanged": 0,
-                "errors": 0
-            }
-        }
-        
-        for record in records:
-            key = record.get(key_field)
-            
-            if not key:
-                preview["errors"].append({
-                    "record": record,
-                    "error": f"Missing required field: {key_field}"
-                })
-                preview["summary"]["errors"] += 1
-                continue
-            
-            if key in existing_items:
-                existing = existing_items[key]
-                # Check for changes
-                changes = {}
-                for field, new_value in record.items():
-                    if field.startswith("_"):
-                        continue
-                    old_value = existing.get(field)
-                    if old_value != new_value and new_value is not None:
-                        changes[field] = {"old": old_value, "new": new_value}
-                
-                if changes:
-                    preview["update"].append({
-                        "key": key,
-                        "changes": changes,
-                        "record": record
-                    })
-                    preview["summary"]["to_update"] += 1
-                else:
-                    preview["unchanged"].append(key)
-                    preview["summary"]["unchanged"] += 1
-            else:
-                preview["create"].append({
-                    "key": key,
-                    "record": record
-                })
-                preview["summary"]["to_create"] += 1
-        
-        return preview
