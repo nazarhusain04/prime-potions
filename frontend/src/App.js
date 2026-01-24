@@ -70,6 +70,7 @@ function App() {
                 <Route path="/master/units" element={<UnitsPage />} />
                 
                 {/* Inventory */}
+                <Route path="/inventory/overview" element={<InventoryOverviewPage />} />
                 <Route path="/inventory/stock" element={<StockPage />} />
                 <Route path="/inventory/transactions" element={<TransactionsPage />} />
                 <Route path="/inventory/receive" element={<ReceivePage />} />
