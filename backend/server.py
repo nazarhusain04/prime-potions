@@ -887,6 +887,173 @@ async def get_stock_summary():
     results = await db.stock_snapshots.aggregate(pipeline).to_list(100)
     return {r["_id"]: {k: v for k, v in r.items() if k != "_id"} for r in results}
 
+@inventory_router.get("/onhand")
+async def get_inventory_onhand(
+    item_type: Optional[str] = None,
+    category: Optional[str] = None,
+    location_id: Optional[str] = None,
+    search: Optional[str] = None,
+    below_min_only: bool = False,
+    skip: int = 0,
+    limit: int = 100,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Get inventory on-hand with item details, min stock alerts, and filtering
+    Computes on-hand from ledger/snapshots
+    """
+    # Build item query
+    item_query = {}
+    if item_type:
+        item_query["type"] = item_type
+    if category:
+        item_query["$or"] = [{"category": category}, {"sub_category": category}]
+    if search:
+        item_query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"sku": {"$regex": search, "$options": "i"}}
+        ]
+    
+    # Get items with their on-hand quantities
+    pipeline = [
+        {"$match": item_query} if item_query else {"$match": {}},
+        {"$lookup": {
+            "from": "stock_snapshots",
+            "let": {"item_id": "$id"},
+            "pipeline": [
+                {"$match": {"$expr": {"$eq": ["$item_id", "$$item_id"]}}},
+                {"$group": {
+                    "_id": "$item_id",
+                    "total_on_hand": {"$sum": "$quantity_on_hand"},
+                    "total_available": {"$sum": "$quantity_available"},
+                    "total_reserved": {"$sum": "$quantity_reserved"},
+                    "lot_count": {"$sum": 1},
+                    "locations": {"$addToSet": "$location_id"}
+                }}
+            ],
+            "as": "inventory"
+        }},
+        {"$unwind": {"path": "$inventory", "preserveNullAndEmptyArrays": True}},
+        {"$addFields": {
+            "on_hand_qty": {"$ifNull": ["$inventory.total_on_hand", 0]},
+            "available_qty": {"$ifNull": ["$inventory.total_available", 0]},
+            "reserved_qty": {"$ifNull": ["$inventory.total_reserved", 0]},
+            "lot_count": {"$ifNull": ["$inventory.lot_count", 0]},
+            "locations": {"$ifNull": ["$inventory.locations", []]},
+            "stock_status": {
+                "$cond": {
+                    "if": {"$lte": [{"$ifNull": ["$inventory.total_on_hand", 0]}, 0]},
+                    "then": "OUT_OF_STOCK",
+                    "else": {
+                        "$cond": {
+                            "if": {"$and": [
+                                {"$gt": [{"$ifNull": ["$min_stock_level", 0]}, 0]},
+                                {"$lt": [{"$ifNull": ["$inventory.total_on_hand", 0]}, {"$ifNull": ["$min_stock_level", 0]}]}
+                            ]},
+                            "then": "LOW_STOCK",
+                            "else": "IN_STOCK"
+                        }
+                    }
+                }
+            }
+        }},
+        {"$project": {"_id": 0, "inventory": 0}}
+    ]
+    
+    # Add min stock filter if requested
+    if below_min_only:
+        pipeline.append({"$match": {"stock_status": {"$in": ["LOW_STOCK", "OUT_OF_STOCK"]}}})
+    
+    # Add location filter after lookup
+    if location_id:
+        pipeline.append({"$match": {"locations": location_id}})
+    
+    # Add pagination
+    pipeline.extend([
+        {"$sort": {"name": 1}},
+        {"$skip": skip},
+        {"$limit": limit}
+    ])
+    
+    items = await db.items.aggregate(pipeline).to_list(limit)
+    
+    # Get total count
+    count_pipeline = [p for p in pipeline if "$skip" not in p and "$limit" not in p]
+    count_pipeline.append({"$count": "total"})
+    count_result = await db.items.aggregate(count_pipeline).to_list(1)
+    total = count_result[0]["total"] if count_result else 0
+    
+    return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+@inventory_router.get("/onhand/{item_id}")
+async def get_item_onhand_detail(item_id: str, user: dict = Depends(get_current_user)):
+    """Get detailed on-hand for a specific item including lot breakdown"""
+    item = await db.items.find_one({"id": item_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    # Get lot-level breakdown
+    lots = await db.stock_snapshots.find({"item_id": item_id}, {"_id": 0}).to_list(1000)
+    
+    # Get recent transactions
+    transactions = await db.inventory_transactions.find(
+        {"item_id": item_id},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(20).to_list(20)
+    
+    # Calculate totals
+    total_on_hand = sum(l.get("quantity_on_hand", 0) for l in lots)
+    total_available = sum(l.get("quantity_available", 0) for l in lots)
+    total_reserved = sum(l.get("quantity_reserved", 0) for l in lots)
+    
+    return {
+        "item": item,
+        "totals": {
+            "on_hand": total_on_hand,
+            "available": total_available,
+            "reserved": total_reserved
+        },
+        "lots": lots,
+        "recent_transactions": transactions
+    }
+
+@inventory_router.get("/alerts/low-stock")
+async def get_low_stock_alerts(user: dict = Depends(get_current_user)):
+    """Get all items below minimum stock level"""
+    pipeline = [
+        {"$lookup": {
+            "from": "stock_snapshots",
+            "let": {"item_id": "$id"},
+            "pipeline": [
+                {"$match": {"$expr": {"$eq": ["$item_id", "$$item_id"]}}},
+                {"$group": {"_id": "$item_id", "total_on_hand": {"$sum": "$quantity_on_hand"}}}
+            ],
+            "as": "inventory"
+        }},
+        {"$unwind": {"path": "$inventory", "preserveNullAndEmptyArrays": True}},
+        {"$addFields": {
+            "on_hand_qty": {"$ifNull": ["$inventory.total_on_hand", 0]}
+        }},
+        {"$match": {
+            "$expr": {
+                "$and": [
+                    {"$gt": ["$min_stock_level", 0]},
+                    {"$lt": ["$on_hand_qty", "$min_stock_level"]}
+                ]
+            }
+        }},
+        {"$project": {
+            "_id": 0,
+            "id": 1, "sku": 1, "name": 1, "type": 1, "category": 1,
+            "min_stock_level": 1, "on_hand_qty": 1, "unit_of_measure": 1,
+            "shortage": {"$subtract": ["$min_stock_level", "$on_hand_qty"]}
+        }},
+        {"$sort": {"shortage": -1}}
+    ]
+    
+    alerts = await db.items.aggregate(pipeline).to_list(500)
+    return {"alerts": alerts, "count": len(alerts)}
+
 @inventory_router.post("/receive")
 async def receive_inventory(
     item_id: str,
