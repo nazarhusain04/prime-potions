@@ -62,7 +62,8 @@ const menuItems = [
     icon: Boxes,
     roles: ['Admin', 'Production', 'Warehouse', 'QA', 'Viewer'],
     children: [
-      { label: 'Stock Overview', path: '/inventory/stock', icon: Boxes },
+      { label: 'Overview', path: '/inventory/overview', icon: Boxes },
+      { label: 'Stock by Lot', path: '/inventory/stock', icon: Boxes },
       { label: 'Transactions', path: '/inventory/transactions', icon: FileText },
       { label: 'Receive', path: '/inventory/receive', icon: Package }
     ]
