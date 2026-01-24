@@ -2391,6 +2391,260 @@ async def download_template(template_type: str, user: dict = Depends(get_current
         headers={"Content-Disposition": f"attachment; filename={template_type}_template.xlsx"}
     )
 
+# ============ PRIME POTIONS EXCEL SYNC ENDPOINTS ============
+
+from excel_services import PrimePotionsExcelService
+
+@excel_router.get("/prime-potions/raw-materials")
+async def export_raw_materials_prime_potions(user: dict = Depends(get_current_user)):
+    """Export Raw Materials in Prime Potions format (RAW-MASTER INV sheet)"""
+    # Get all raw materials
+    items = await db.items.find({"type": "RAW"}, {"_id": 0}).to_list(10000)
+    
+    # Also check raw_materials collection for backwards compatibility
+    if not items:
+        raw_mats = await db.raw_materials.find({}, {"_id": 0}).to_list(10000)
+        items = [{"id": r.get("id"), "sku": r.get("sku"), "name": r.get("name"), 
+                  "manufacturer": r.get("manufacturer"), "inci_name": r.get("inci_name"),
+                  "location": r.get("location"), "unit_of_measure": r.get("unit_of_measure", "KG"),
+                  "min_stock_level": r.get("min_stock_level", 0)} for r in raw_mats]
+    
+    # Get inventory data
+    inventory = await db.stock_snapshots.find({"item_type": {"$in": ["RAW", "raw_material"]}}, {"_id": 0}).to_list(10000)
+    
+    content = PrimePotionsExcelService.generate_raw_materials_excel(items, inventory)
+    
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=RAW-Material_Master_Inventory.xlsx"}
+    )
+
+@excel_router.get("/prime-potions/packaging")
+async def export_packaging_prime_potions(user: dict = Depends(get_current_user)):
+    """Export Packaging in Prime Potions format (Master inventory-Packaging sheet)"""
+    # Get all packaging materials
+    items = await db.items.find({"type": "PACK"}, {"_id": 0}).to_list(10000)
+    
+    if not items:
+        pack_mats = await db.packaging_materials.find({}, {"_id": 0}).to_list(10000)
+        items = [{"id": p.get("id"), "name": p.get("name"), "sku": p.get("sku"),
+                  "category": p.get("category"), "sub_category": p.get("sub_category"),
+                  "supplier": p.get("supplier"), "size_specs": p.get("size_specs"),
+                  "unit_of_measure": p.get("unit_of_measure", "EA"),
+                  "location": p.get("location"), "min_stock_level": p.get("min_stock_level", 0),
+                  "is_active": p.get("is_active", True)} for p in pack_mats]
+    
+    inventory = await db.stock_snapshots.find({"item_type": {"$in": ["PACK", "packaging_material"]}}, {"_id": 0}).to_list(10000)
+    
+    content = PrimePotionsExcelService.generate_packaging_excel(items, inventory)
+    
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=Master_Inventory_Packaging.xlsx"}
+    )
+
+@excel_router.get("/prime-potions/batching-template")
+async def export_batching_template(
+    formula_id: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Export Prime Potions Batching Template
+    - If formula_id provided: Pre-fill with formula ingredients
+    - If batch_id provided: Pre-fill with workspace data
+    """
+    batch_info = {
+        "batch_code": "",
+        "product_name": "",
+        "formula_name": "",
+        "planned_qty": 0,
+        "batch_unit": "KG",
+        "batch_date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    }
+    
+    formula_lines = []
+    
+    # If batch_id provided, get workspace data
+    if batch_id:
+        workspace = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+        if workspace:
+            batch_info["batch_code"] = workspace.get("batch_code", "")
+            batch_info["formula_name"] = workspace.get("formula_name", "")
+            batch_info["product_name"] = workspace.get("formula_name", "")
+            batch_info["planned_qty"] = workspace.get("planned_qty", 0)
+            batch_info["batch_unit"] = workspace.get("batch_unit", "KG")
+            
+            # Get formula lines if formula_id exists
+            if workspace.get("formula_id"):
+                formula_id = workspace["formula_id"]
+    
+    # Get formula ingredients if formula_id
+    if formula_id:
+        formula = await db.formulas.find_one({"id": formula_id}, {"_id": 0})
+        if formula:
+            batch_info["formula_name"] = formula.get("name", "")
+            batch_info["product_name"] = formula.get("name", "")
+            if not batch_info["planned_qty"]:
+                batch_info["planned_qty"] = formula.get("default_batch_size", 0)
+            batch_info["batch_unit"] = formula.get("batch_unit", "KG")
+            
+            lines = await db.formula_lines.find({"formula_id": formula_id}, {"_id": 0}).sort("add_order", 1).to_list(200)
+            formula_lines = lines
+    
+    # Build inventory lookup for VLOOKUP support
+    inventory_lookup = []
+    raw_items = await db.items.find({"type": "RAW"}, {"_id": 0}).to_list(10000)
+    if not raw_items:
+        raw_items = await db.raw_materials.find({}, {"_id": 0}).to_list(10000)
+    
+    # Get on-hand quantities
+    for item in raw_items:
+        item_id = item.get("id")
+        snapshots = await db.stock_snapshots.find({"item_id": item_id}, {"_id": 0}).to_list(100)
+        total_on_hand = sum(s.get("quantity_on_hand", 0) for s in snapshots)
+        
+        inventory_lookup.append({
+            "name": item.get("name", ""),
+            "sku": item.get("sku", ""),
+            "location": item.get("location", ""),
+            "unit_of_measure": item.get("unit_of_measure", "KG"),
+            "quantity_on_hand": total_on_hand
+        })
+    
+    content = PrimePotionsExcelService.generate_batching_template(batch_info, formula_lines, inventory_lookup)
+    
+    filename = f"Batching_Sheet_{batch_info.get('batch_code', 'NEW')}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+@excel_router.post("/prime-potions/import-raw-materials")
+async def import_raw_materials_prime_potions(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """
+    Import Raw Materials from Prime Potions format (ADMIN ONLY)
+    Updates master data only - does NOT create inventory transactions
+    """
+    content = await file.read()
+    parsed = PrimePotionsExcelService.parse_raw_materials_import(content)
+    
+    if parsed["errors"]:
+        raise HTTPException(status_code=400, detail={"message": "Import errors", "errors": parsed["errors"]})
+    
+    results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+    
+    for item_data in parsed["items"]:
+        try:
+            sku = item_data.get("sku", "")
+            name = item_data.get("name", "")
+            
+            if not sku and not name:
+                results["skipped"] += 1
+                continue
+            
+            # Check if exists
+            query = {"sku": sku} if sku else {"name": name}
+            existing = await db.items.find_one(query, {"_id": 0})
+            
+            item_doc = {
+                "sku": sku,
+                "name": name,
+                "type": "RAW",
+                "manufacturer": item_data.get("manufacturer", ""),
+                "inci_name": item_data.get("inci_name", ""),
+                "location": item_data.get("location", ""),
+                "secondary_location": item_data.get("secondary_location", ""),
+                "unit_of_measure": item_data.get("unit_of_measure", "KG"),
+                "min_stock_level": float(item_data.get("min_stock_level", 0) or 0),
+                "container_type": item_data.get("container_type", ""),
+                "notes": item_data.get("notes", ""),
+                "tracking_key": item_data.get("tracking_key", ""),
+                "coa_status": item_data.get("coa_status", ""),
+                "is_active": True
+            }
+            
+            # Add any custom fields
+            for k, v in item_data.items():
+                if k.startswith("custom_") and v:
+                    item_doc[k] = v
+            
+            if existing:
+                await db.items.update_one(query, {"$set": item_doc})
+                results["updated"] += 1
+            else:
+                item_doc["id"] = generate_id()
+                item_doc["created_at"] = get_timestamp()
+                await db.items.insert_one(item_doc)
+                results["created"] += 1
+                
+        except Exception as e:
+            results["errors"].append(f"Error processing {item_data.get('sku', 'unknown')}: {str(e)}")
+    
+    await create_audit_log(user["id"], "excel_import", "raw_materials", "bulk", results)
+    
+    return results
+
+@excel_router.post("/prime-potions/import-packaging")
+async def import_packaging_prime_potions(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """Import Packaging from Prime Potions format (ADMIN ONLY)"""
+    content = await file.read()
+    parsed = PrimePotionsExcelService.parse_packaging_import(content)
+    
+    if parsed["errors"]:
+        raise HTTPException(status_code=400, detail={"message": "Import errors", "errors": parsed["errors"]})
+    
+    results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+    
+    for item_data in parsed["items"]:
+        try:
+            name = item_data.get("name", "")
+            if not name:
+                results["skipped"] += 1
+                continue
+            
+            existing = await db.items.find_one({"name": name, "type": "PACK"}, {"_id": 0})
+            
+            item_doc = {
+                "name": name,
+                "type": "PACK",
+                "category": item_data.get("category", ""),
+                "sub_category": item_data.get("sub_category", ""),
+                "client": item_data.get("client", ""),
+                "supplier": item_data.get("supplier", ""),
+                "size_specs": item_data.get("size_specs", ""),
+                "unit_of_measure": item_data.get("unit_of_measure", "EA"),
+                "location": item_data.get("location", ""),
+                "min_stock_level": float(item_data.get("min_stock_level", 0) or 0),
+                "is_active": str(item_data.get("is_active", "Yes")).lower() in ["yes", "true", "1", "active"]
+            }
+            
+            if existing:
+                await db.items.update_one({"name": name, "type": "PACK"}, {"$set": item_doc})
+                results["updated"] += 1
+            else:
+                item_doc["id"] = generate_id()
+                item_doc["sku"] = f"PKG-{generate_id()[:8].upper()}"
+                item_doc["created_at"] = get_timestamp()
+                await db.items.insert_one(item_doc)
+                results["created"] += 1
+                
+        except Exception as e:
+            results["errors"].append(f"Error processing {item_data.get('name', 'unknown')}: {str(e)}")
+    
+    await create_audit_log(user["id"], "excel_import", "packaging", "bulk", results)
+    
+    return results
+
 # ============ BATCHING WORKSPACE ROUTES ============
 
 class BatchingWorkspaceCreate(BaseModel):
