@@ -1,479 +1,397 @@
-import React, { useState, useCallback } from 'react';
-import { useDropzone } from 'react-dropzone';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import React, { useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
-import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '../components/ui/table';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../components/ui/dialog';
+import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import { 
-  Upload, 
   Download, 
-  FileSpreadsheet, 
-  ArrowRight, 
-  CheckCircle, 
-  AlertTriangle,
+  Upload, 
+  FileSpreadsheet,
+  Package,
+  Boxes,
+  Beaker,
+  CheckCircle,
+  AlertCircle,
   Loader2,
-  Plus,
-  X
+  Lock,
+  Info
 } from 'lucide-react';
 import api from '../lib/api';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-
 export const ExcelSyncPage = () => {
-  const [activeTab, setActiveTab] = useState('import');
-  const [uploadedFile, setUploadedFile] = useState(null);
-  const [analysis, setAnalysis] = useState(null);
-  const [selectedSheet, setSelectedSheet] = useState('');
-  const [mappingType, setMappingType] = useState('raw_material');
-  const [fieldMappings, setFieldMappings] = useState({});
-  const [preview, setPreview] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [step, setStep] = useState(1);
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'Admin';
+  
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [uploadType, setUploadType] = useState(null);
 
-  const onDrop = useCallback(async (acceptedFiles) => {
-    const file = acceptedFiles[0];
-    if (!file) return;
-
-    setUploadedFile(file);
-    setLoading(true);
-    setAnalysis(null);
-    setSelectedSheet('');
-    setFieldMappings({});
-    setPreview(null);
-    setStep(1);
-
-    const formData = new FormData();
-    formData.append('file', file);
-
+  const handleDownload = async (type) => {
     try {
-      const response = await api.post('/excel/analyze', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      setAnalysis(response.data.analysis);
-      toast.success('File analyzed successfully');
-    } catch (error) {
-      toast.error('Failed to analyze file');
-      setUploadedFile(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: {
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-      'application/vnd.ms-excel': ['.xls']
-    },
-    maxFiles: 1
-  });
-
-  const handleSheetSelect = async (sheetName) => {
-    setSelectedSheet(sheetName);
-    const sheet = analysis.sheets.find(s => s.name === sheetName);
-    
-    if (sheet) {
-      // Get suggested mappings
-      try {
-        const response = await api.post('/excel/suggest-mappings', sheet.headers, {
-          params: { mapping_type: mappingType }
-        });
-        setFieldMappings(response.data.suggestions);
-      } catch (error) {
-        // Use empty mappings
-        const emptyMappings = {};
-        sheet.headers.forEach(h => emptyMappings[h] = null);
-        setFieldMappings(emptyMappings);
-      }
-    }
-    setStep(2);
-  };
-
-  const handlePreview = async () => {
-    if (!uploadedFile || !selectedSheet) return;
-    setLoading(true);
-
-    const formData = new FormData();
-    formData.append('file', uploadedFile);
-
-    try {
-      const response = await api.post('/excel/preview-import', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        params: { sheet_name: selectedSheet, mapping_type: mappingType }
-      });
-      setPreview(response.data.preview);
-      setStep(3);
-      toast.success('Preview generated');
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to generate preview');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleApply = async () => {
-    if (!uploadedFile || !selectedSheet) return;
-    setApplying(true);
-
-    const formData = new FormData();
-    formData.append('file', uploadedFile);
-
-    try {
-      const response = await api.post('/excel/apply-import', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        params: { 
-          sheet_name: selectedSheet, 
-          mapping_type: mappingType,
-          field_mappings: JSON.stringify(fieldMappings)
+      const endpoints = {
+        raw: '/excel/prime-potions/raw-materials',
+        packaging: '/excel/prime-potions/packaging',
+        batching: '/excel/prime-potions/batching-template',
+      };
+      
+      const filenames = {
+        raw: 'RAW-Material_Master_Inventory.xlsx',
+        packaging: 'Master_Inventory_Packaging.xlsx',
+        batching: 'Batching_Template.xlsx',
+      };
+      
+      const response = await fetch(
+        `${process.env.REACT_APP_BACKEND_URL}${endpoints[type]}`,
+        {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`
+          }
         }
-      });
+      );
       
-      toast.success(`Import complete! Created: ${response.data.created}, Updated: ${response.data.updated}`);
+      if (!response.ok) throw new Error('Download failed');
       
-      // Reset
-      setUploadedFile(null);
-      setAnalysis(null);
-      setSelectedSheet('');
-      setFieldMappings({});
-      setPreview(null);
-      setStep(1);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filenames[type];
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+      
+      toast.success(`${type} exported successfully`);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Import failed');
-    } finally {
-      setApplying(false);
+      toast.error('Export failed: ' + error.message);
     }
   };
 
-  const handleDownloadTemplate = async (templateType) => {
+  const handleFileSelect = (e, type) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      setUploadType(type);
+      setUploadResult(null);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile || !uploadType) return;
+    
+    setUploading(true);
+    setUploadResult(null);
+    
     try {
-      const response = await api.get(`/excel/download-template/${templateType}`, {
-        responseType: 'blob'
-      });
+      const formData = new FormData();
+      formData.append('file', selectedFile);
       
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `${templateType}_template.xlsx`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      const endpoints = {
+        raw: '/excel/prime-potions/import-raw-materials',
+        packaging: '/excel/prime-potions/import-packaging',
+      };
       
-      toast.success('Template downloaded');
+      const response = await fetch(
+        `${process.env.REACT_APP_BACKEND_URL}${endpoints[uploadType]}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`
+          },
+          body: formData
+        }
+      );
+      
+      const result = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(result.detail?.message || result.detail || 'Import failed');
+      }
+      
+      setUploadResult(result);
+      toast.success(`Import complete: ${result.created} created, ${result.updated} updated`);
     } catch (error) {
-      toast.error('Failed to download template');
+      toast.error('Import failed: ' + error.message);
+      setUploadResult({ error: error.message });
+    } finally {
+      setUploading(false);
     }
   };
 
-  const selectedSheetInfo = analysis?.sheets.find(s => s.name === selectedSheet);
+  const ExportCard = ({ title, description, icon: Icon, type, color }) => (
+    <Card className="hover:shadow-md transition-shadow">
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-3">
+          <div className={`p-2 rounded-lg ${color}`}>
+            <Icon className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <CardTitle className="text-base">{title}</CardTitle>
+            <CardDescription className="text-xs">{description}</CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <Button 
+          className="w-full" 
+          variant="outline"
+          onClick={() => handleDownload(type)}
+          data-testid={`export-${type}-btn`}
+        >
+          <Download className="w-4 h-4 mr-2" />
+          Export to Excel
+        </Button>
+      </CardContent>
+    </Card>
+  );
+
+  const ImportCard = ({ title, description, icon: Icon, type, color }) => (
+    <Card className={`hover:shadow-md transition-shadow ${!isAdmin ? 'opacity-60' : ''}`}>
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-3">
+          <div className={`p-2 rounded-lg ${color}`}>
+            <Icon className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1">
+            <CardTitle className="text-base flex items-center gap-2">
+              {title}
+              {!isAdmin && <Lock className="w-3 h-3 text-gray-400" />}
+            </CardTitle>
+            <CardDescription className="text-xs">{description}</CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isAdmin ? (
+          <div className="space-y-2">
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => handleFileSelect(e, type)}
+              className="hidden"
+              id={`upload-${type}`}
+              data-testid={`upload-${type}-input`}
+            />
+            <label htmlFor={`upload-${type}`}>
+              <Button 
+                className="w-full cursor-pointer" 
+                variant="outline"
+                asChild
+              >
+                <span>
+                  <Upload className="w-4 h-4 mr-2" />
+                  Select File
+                </span>
+              </Button>
+            </label>
+            {selectedFile && uploadType === type && (
+              <div className="text-xs text-gray-500 truncate">
+                Selected: {selectedFile.name}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-sm text-gray-500 text-center py-2">
+            Admin access required for import
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 
   return (
     <div className="space-y-6" data-testid="excel-sync-page">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">Excel Sync</h1>
-        <p className="text-slate-500">Import and export data via Excel workbooks</p>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <FileSpreadsheet className="w-7 h-7" />
+            Excel Sync
+          </h1>
+          <p className="text-gray-500">Export and import data using Prime Potions Excel templates</p>
+        </div>
+        {user && (
+          <Badge variant={isAdmin ? "default" : "secondary"}>
+            {user.role}
+          </Badge>
+        )}
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="import" data-testid="tab-import">
-            <Upload className="w-4 h-4 mr-2" /> Import
-          </TabsTrigger>
-          <TabsTrigger value="export" data-testid="tab-export">
-            <Download className="w-4 h-4 mr-2" /> Export Templates
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="import" className="space-y-6">
-          {/* Step Indicator */}
-          <div className="flex items-center gap-4 text-sm">
-            <div className={`flex items-center gap-2 ${step >= 1 ? 'text-[#0F5132]' : 'text-slate-400'}`}>
-              <span className={`w-6 h-6 rounded-full flex items-center justify-center ${step >= 1 ? 'bg-[#0F5132] text-white' : 'bg-slate-200'}`}>1</span>
-              Upload
-            </div>
-            <ArrowRight className="w-4 h-4 text-slate-300" />
-            <div className={`flex items-center gap-2 ${step >= 2 ? 'text-[#0F5132]' : 'text-slate-400'}`}>
-              <span className={`w-6 h-6 rounded-full flex items-center justify-center ${step >= 2 ? 'bg-[#0F5132] text-white' : 'bg-slate-200'}`}>2</span>
-              Map Fields
-            </div>
-            <ArrowRight className="w-4 h-4 text-slate-300" />
-            <div className={`flex items-center gap-2 ${step >= 3 ? 'text-[#0F5132]' : 'text-slate-400'}`}>
-              <span className={`w-6 h-6 rounded-full flex items-center justify-center ${step >= 3 ? 'bg-[#0F5132] text-white' : 'bg-slate-200'}`}>3</span>
-              Preview & Apply
+      {/* Info Banner */}
+      <Card className="bg-blue-50 border-blue-200">
+        <CardContent className="py-3">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-blue-600 mt-0.5" />
+            <div className="text-sm text-blue-800">
+              <p className="font-medium">Prime Potions Template Mode</p>
+              <p className="text-blue-600">
+                Exports and imports use your exact Excel column headers and sheet names. 
+                Inventory transactions are created through ERP workflows only - Excel import updates master data.
+              </p>
             </div>
           </div>
+        </CardContent>
+      </Card>
 
-          {/* Step 1: Upload */}
-          <Card className="border-slate-200">
-            <CardHeader className="py-3 px-4 border-b border-slate-100">
-              <CardTitle className="text-base">Step 1: Upload Excel File</CardTitle>
-            </CardHeader>
-            <CardContent className="p-4">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Export Section */}
+      <div>
+        <h2 className="text-lg font-semibold mb-4">Export Data</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <ExportCard
+            title="Raw Materials"
+            description="RAW-MASTER INV sheet with exact headers"
+            icon={Package}
+            type="raw"
+            color="bg-green-600"
+          />
+          <ExportCard
+            title="Packaging"
+            description="Master inventory-Packaging sheet"
+            icon={Boxes}
+            type="packaging"
+            color="bg-blue-600"
+          />
+          <ExportCard
+            title="Batching Template"
+            description="Prime Potions batching sheet format"
+            icon={Beaker}
+            type="batching"
+            color="bg-purple-600"
+          />
+        </div>
+      </div>
+
+      {/* Import Section */}
+      <div>
+        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          Import Data
+          {!isAdmin && <Badge variant="outline" className="text-xs">Admin Only</Badge>}
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <ImportCard
+            title="Raw Materials"
+            description="Update master data from RAW-MASTER INV"
+            icon={Package}
+            type="raw"
+            color="bg-green-600"
+          />
+          <ImportCard
+            title="Packaging"
+            description="Update master data from Master inventory-Packaging"
+            icon={Boxes}
+            type="packaging"
+            color="bg-blue-600"
+          />
+        </div>
+
+        {/* Upload Button & Results */}
+        {isAdmin && selectedFile && (
+          <Card className="mt-4">
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between">
                 <div>
-                  <div
-                    {...getRootProps()}
-                    className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
-                      isDragActive ? 'border-[#0F5132] bg-[#0F5132]/5' : 'border-slate-300 hover:border-slate-400'
-                    }`}
-                  >
-                    <input {...getInputProps()} data-testid="file-upload-input" />
-                    {loading ? (
-                      <Loader2 className="w-12 h-12 mx-auto text-slate-400 animate-spin" />
-                    ) : uploadedFile ? (
-                      <div>
-                        <FileSpreadsheet className="w-12 h-12 mx-auto text-[#0F5132] mb-2" />
-                        <p className="font-medium text-slate-900">{uploadedFile.name}</p>
-                        <p className="text-sm text-slate-500">{(uploadedFile.size / 1024).toFixed(1)} KB</p>
-                      </div>
-                    ) : (
-                      <div>
-                        <Upload className="w-12 h-12 mx-auto text-slate-400 mb-2" />
-                        <p className="font-medium text-slate-700">
-                          {isDragActive ? 'Drop the file here' : 'Drag & drop Excel file here'}
-                        </p>
-                        <p className="text-sm text-slate-500 mt-1">or click to browse (.xlsx, .xls)</p>
-                      </div>
-                    )}
-                  </div>
+                  <p className="font-medium">{selectedFile.name}</p>
+                  <p className="text-sm text-gray-500">Type: {uploadType}</p>
                 </div>
-
-                {analysis && (
-                  <div>
-                    <Label className="mb-2 block">Select Sheet & Data Type</Label>
-                    <div className="space-y-3">
-                      <Select value={mappingType} onValueChange={setMappingType}>
-                        <SelectTrigger data-testid="mapping-type-select">
-                          <SelectValue placeholder="Data type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="raw_material">Raw Materials</SelectItem>
-                          <SelectItem value="packaging">Packaging Materials</SelectItem>
-                        </SelectContent>
-                      </Select>
-
-                      <div className="space-y-2">
-                        {analysis.sheets.map((sheet) => (
-                          <button
-                            key={sheet.name}
-                            onClick={() => handleSheetSelect(sheet.name)}
-                            className={`w-full text-left p-3 rounded-md border transition-colors ${
-                              selectedSheet === sheet.name 
-                                ? 'border-[#0F5132] bg-[#0F5132]/5' 
-                                : 'border-slate-200 hover:border-slate-300'
-                            }`}
-                            data-testid={`sheet-${sheet.name}`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="font-medium">{sheet.name}</span>
-                              <Badge variant="secondary">{sheet.row_count} rows</Badge>
-                            </div>
-                            <p className="text-xs text-slate-500 mt-1">
-                              {sheet.headers.slice(0, 4).join(', ')}{sheet.headers.length > 4 ? '...' : ''}
-                            </p>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Step 2: Field Mappings */}
-          {step >= 2 && selectedSheetInfo && (
-            <Card className="border-slate-200">
-              <CardHeader className="py-3 px-4 border-b border-slate-100">
-                <CardTitle className="text-base">Step 2: Review Field Mappings</CardTitle>
-              </CardHeader>
-              <CardContent className="p-4">
-                <p className="text-sm text-slate-500 mb-4">
-                  Review the auto-detected mappings. Adjust if needed.
-                </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {Object.entries(fieldMappings).map(([sourceCol, targetField]) => (
-                    <div key={sourceCol} className="flex items-center gap-2 p-2 bg-slate-50 rounded-md">
-                      <span className="text-sm font-medium text-slate-700 flex-1 truncate" title={sourceCol}>
-                        {sourceCol}
-                      </span>
-                      <ArrowRight className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                      <Badge className={targetField ? 'bg-[#0F5132]' : 'bg-slate-300'}>
-                        {targetField || 'unmapped'}
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 flex justify-end">
+                <div className="flex gap-2">
                   <Button 
-                    className="btn-primary gap-2" 
-                    onClick={handlePreview}
-                    disabled={loading}
-                    data-testid="preview-btn"
+                    variant="outline" 
+                    onClick={() => { setSelectedFile(null); setUploadType(null); setUploadResult(null); }}
                   >
-                    {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-                    Preview Changes
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Step 3: Preview */}
-          {step >= 3 && preview && (
-            <Card className="border-slate-200">
-              <CardHeader className="py-3 px-4 border-b border-slate-100">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Step 3: Preview Changes</CardTitle>
-                  <div className="flex items-center gap-2">
-                    <Badge className="bg-emerald-100 text-emerald-800">
-                      <Plus className="w-3 h-3 mr-1" /> {preview.summary.to_create} new
-                    </Badge>
-                    <Badge className="bg-amber-100 text-amber-800">
-                      {preview.summary.to_update} updates
-                    </Badge>
-                    {preview.summary.errors > 0 && (
-                      <Badge className="bg-red-100 text-red-800">
-                        {preview.summary.errors} errors
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="p-4">
-                {preview.create.length > 0 && (
-                  <div className="mb-4">
-                    <h4 className="font-semibold text-sm text-emerald-700 mb-2 flex items-center gap-2">
-                      <CheckCircle className="w-4 h-4" /> Will Create ({preview.create.length})
-                    </h4>
-                    <div className="max-h-40 overflow-y-auto">
-                      <Table>
-                        <TableBody>
-                          {preview.create.slice(0, 10).map((item, idx) => (
-                            <TableRow key={idx}>
-                              <TableCell className="lot-number">{item.key}</TableCell>
-                              <TableCell className="text-sm text-slate-600">
-                                {item.record.name || item.record.item_code || '-'}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </div>
-                )}
-
-                {preview.update.length > 0 && (
-                  <div className="mb-4">
-                    <h4 className="font-semibold text-sm text-amber-700 mb-2 flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4" /> Will Update ({preview.update.length})
-                    </h4>
-                    <div className="max-h-40 overflow-y-auto">
-                      <Table>
-                        <TableBody>
-                          {preview.update.slice(0, 10).map((item, idx) => (
-                            <TableRow key={idx}>
-                              <TableCell className="lot-number">{item.key}</TableCell>
-                              <TableCell className="text-xs text-slate-500">
-                                {Object.keys(item.changes).join(', ')}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </div>
-                )}
-
-                <div className="mt-4 flex justify-end gap-3">
-                  <Button variant="outline" onClick={() => { setStep(1); setPreview(null); }}>
                     Cancel
                   </Button>
                   <Button 
-                    className="btn-primary gap-2" 
-                    onClick={handleApply}
-                    disabled={applying || preview.summary.to_create + preview.summary.to_update === 0}
+                    onClick={handleUpload} 
+                    disabled={uploading}
                     data-testid="apply-import-btn"
                   >
-                    {applying && <Loader2 className="w-4 h-4 animate-spin" />}
-                    Apply Import
+                    {uploading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Importing...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4 mr-2" />
+                        Apply Import
+                      </>
+                    )}
                   </Button>
                 </div>
-              </CardContent>
-            </Card>
-          )}
-        </TabsContent>
-
-        <TabsContent value="export" className="space-y-6">
-          <Card className="border-slate-200">
-            <CardHeader className="py-3 px-4 border-b border-slate-100">
-              <CardTitle className="text-base">Download Templates</CardTitle>
-            </CardHeader>
-            <CardContent className="p-4">
-              <p className="text-sm text-slate-500 mb-4">
-                Download Excel templates to prepare data for import.
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <button
-                  onClick={() => handleDownloadTemplate('raw_materials')}
-                  className="p-4 border border-slate-200 rounded-lg hover:border-[#0F5132] hover:bg-[#0F5132]/5 transition-colors text-left"
-                  data-testid="download-raw-materials-template"
-                >
-                  <FileSpreadsheet className="w-8 h-8 text-[#0F5132] mb-2" />
-                  <p className="font-medium">Raw Materials Template</p>
-                  <p className="text-sm text-slate-500">Import raw material master data</p>
-                </button>
-
-                <button
-                  onClick={() => handleDownloadTemplate('packaging')}
-                  className="p-4 border border-slate-200 rounded-lg hover:border-[#0F5132] hover:bg-[#0F5132]/5 transition-colors text-left"
-                  data-testid="download-packaging-template"
-                >
-                  <FileSpreadsheet className="w-8 h-8 text-[#0F5132] mb-2" />
-                  <p className="font-medium">Packaging Template</p>
-                  <p className="text-sm text-slate-500">Import packaging materials</p>
-                </button>
-
-                <button
-                  onClick={() => handleDownloadTemplate('inventory_receipt')}
-                  className="p-4 border border-slate-200 rounded-lg hover:border-[#0F5132] hover:bg-[#0F5132]/5 transition-colors text-left"
-                  data-testid="download-inventory-template"
-                >
-                  <FileSpreadsheet className="w-8 h-8 text-[#0F5132] mb-2" />
-                  <p className="font-medium">Inventory Receipt Template</p>
-                  <p className="text-sm text-slate-500">Record inventory receipts</p>
-                </button>
               </div>
+
+              {/* Import Results */}
+              {uploadResult && !uploadResult.error && (
+                <div className="mt-4 p-3 bg-green-50 rounded-lg border border-green-200">
+                  <div className="flex items-center gap-2 text-green-700 font-medium">
+                    <CheckCircle className="w-5 h-5" />
+                    Import Successful
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-4 text-sm">
+                    <div>
+                      <span className="text-gray-500">Created:</span>
+                      <span className="ml-2 font-bold text-green-600">{uploadResult.created}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Updated:</span>
+                      <span className="ml-2 font-bold text-blue-600">{uploadResult.updated}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Skipped:</span>
+                      <span className="ml-2 font-bold text-gray-600">{uploadResult.skipped || 0}</span>
+                    </div>
+                  </div>
+                  {uploadResult.errors?.length > 0 && (
+                    <div className="mt-2 text-sm text-red-600">
+                      Errors: {uploadResult.errors.join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {uploadResult?.error && (
+                <div className="mt-4 p-3 bg-red-50 rounded-lg border border-red-200">
+                  <div className="flex items-center gap-2 text-red-700">
+                    <AlertCircle className="w-5 h-5" />
+                    Import Failed: {uploadResult.error}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
-        </TabsContent>
-      </Tabs>
+        )}
+      </div>
+
+      {/* Template Info */}
+      <Card className="bg-gray-50">
+        <CardHeader>
+          <CardTitle className="text-base">Template Reference</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm space-y-3">
+          <div>
+            <p className="font-medium">Raw Materials Sheet: RAW-MASTER INV</p>
+            <p className="text-gray-500 text-xs">
+              ITEM CODE | INTERNAL LOT # | Ingredient Name | SUPPLIER LOT # | Tracking key | Opening stock | Inventory on hand | EXPIRY / RETEST Date | VENDOR / MANUFACTURER | INCI NAME | Primary Inv Zone | 2ND Inv Zone | CoA | Container Type | UoM | Notes | Minimum stock | Stock status
+            </p>
+          </div>
+          <div>
+            <p className="font-medium">Packaging Sheet: Master inventory-Packaging</p>
+            <p className="text-gray-500 text-xs">
+              Item Name | sub category | category | Client | Supplier | Size or Specs | UOM | Opening Stock | On Hand | Active | Storage location | Minimum Stock | Stock Status
+            </p>
+          </div>
+          <div>
+            <p className="font-medium">Batching Sheet (row 4 headers):</p>
+            <p className="text-gray-500 text-xs">
+              Ingredient Formula | Inv Loc. | Qty Required | Add Order | Added | Kg Sum | Process Notes | Batch Notes | [blank] | Qty on Hand (kg) | ENTER % QTY HERE | [blank] | [blank] | Enter individual Quantities...
+            </p>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };
+
+export default ExcelSyncPage;
