@@ -657,3 +657,216 @@ class ExcelTemplateConfig:
         wb.save(output)
         output.seek(0)
         return output.getvalue()
+
+
+
+# Standard field mappings for generic Excel files
+DEFAULT_RAW_MATERIAL_MAPPINGS = {
+    "item_code": ["ITEM CODE", "Item Code", "SKU", "Code", "ItemCode"],
+    "name": ["Ingredient Name", "Name", "INCI NAME", "Material Name", "Item Name"],
+    "supplier": ["SUPPLIER", "Supplier", "Vendor"],
+    "lot_number": ["LOT #", "Lot Number", "LOT", "Lot #", "Lot"],
+    "expiry_date": ["EXPIRY / RETEST Date", "Expiry Date", "Expiry", "Retest Date"],
+    "manufacturer": ["VENDOR / MANUFACTURER", "Manufacturer", "Vendor / Manufacturer"],
+    "inci_name": ["INCI NAME", "INCI", "Scientific Name"],
+    "location": ["Primary Inv Zone", "Storage location", "Location", "Zone"],
+    "quantity_on_hand": ["Inventory on Hand", "On Hand", "QTY", "Quantity", "Stock"],
+    "container_type": ["Container Type", "Container", "Packaging"],
+    "uom": ["UoM", "UOM", "Unit", "Unit of Measure"],
+    "notes": ["Notes", "Comments", "Remarks"],
+    "minimum_stock": ["Safety Stock", "Minimum Stock", "Min Stock", "Reorder Point"],
+    "category": ["Class", "Category", "sub category", "Type"],
+    "cost_per_unit": ["Cost/unit", "Cost", "Unit Cost", "Price"]
+}
+
+DEFAULT_PACKAGING_MAPPINGS = {
+    "item_code": ["Item Code", "SKU", "Code"],
+    "name": ["Item Name", "Name", "Description"],
+    "category": ["category", "Category", "Type"],
+    "sub_category": ["sub category", "Sub Category", "Subcategory"],
+    "client": ["Client", "Customer"],
+    "supplier": ["Supplier", "Vendor"],
+    "size_specs": ["Size or Specs", "Size", "Specs", "Specifications"],
+    "uom": ["UOM", "UoM", "Unit"],
+    "quantity_on_hand": ["On Hand", "Stock", "Quantity"],
+    "location": ["Storage location", "Location"],
+    "minimum_stock": ["Minimum Stock", "Min Stock"],
+    "stock_status": ["Stock Status", "Status"]
+}
+
+
+def fuzzy_match_column(column_name: str, mappings: Dict[str, List[str]]) -> Optional[str]:
+    """Find the best matching standard field for a column name"""
+    col_lower = column_name.lower().strip()
+    
+    for standard_field, aliases in mappings.items():
+        for alias in aliases:
+            if alias.lower() == col_lower:
+                return standard_field
+    
+    # Partial match
+    for standard_field, aliases in mappings.items():
+        for alias in aliases:
+            if alias.lower() in col_lower or col_lower in alias.lower():
+                return standard_field
+    
+    return None
+
+
+class ExcelService:
+    """Generic Excel service for analyzing and parsing workbooks"""
+    
+    @staticmethod
+    def analyze_workbook(content: bytes) -> Dict[str, Any]:
+        """Analyze an Excel workbook and return its structure"""
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+        
+        sheets = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            
+            # Get headers from first row
+            headers = []
+            for col in range(1, min(ws.max_column + 1, 50)):
+                val = ws.cell(row=1, column=col).value
+                if val:
+                    headers.append(str(val))
+            
+            # Count data rows
+            row_count = 0
+            for row in range(2, min(ws.max_row + 1, 1000)):
+                if ws.cell(row=row, column=1).value:
+                    row_count += 1
+            
+            sheets.append({
+                "name": sheet_name,
+                "headers": headers,
+                "row_count": row_count
+            })
+        
+        return {"sheets": sheets}
+    
+    @staticmethod
+    def suggest_mappings(headers: List[str], mapping_type: str = "raw_material") -> Dict[str, str]:
+        """Suggest field mappings for column headers"""
+        mappings_dict = DEFAULT_RAW_MATERIAL_MAPPINGS if mapping_type == "raw_material" else DEFAULT_PACKAGING_MAPPINGS
+        
+        suggestions = {}
+        for header in headers:
+            matched = fuzzy_match_column(header, mappings_dict)
+            if matched:
+                suggestions[header] = matched
+        
+        return suggestions
+    
+    @staticmethod
+    def parse_excel_to_records(content: bytes, sheet_name: str, field_mappings: Dict[str, str]) -> List[Dict[str, Any]]:
+        """Parse Excel sheet to list of records using field mappings"""
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+        
+        if sheet_name not in wb.sheetnames:
+            return []
+        
+        ws = wb[sheet_name]
+        
+        # Get headers
+        headers = []
+        for col in range(1, ws.max_column + 1):
+            val = ws.cell(row=1, column=col).value
+            headers.append(str(val) if val else f"col_{col}")
+        
+        records = []
+        for row_idx in range(2, ws.max_row + 1):
+            record = {}
+            has_data = False
+            
+            for col_idx, header in enumerate(headers, 1):
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val is not None:
+                    has_data = True
+                
+                # Map to standard field if mapping exists
+                field_name = field_mappings.get(header, header)
+                record[field_name] = val
+            
+            if has_data:
+                records.append(record)
+        
+        return records
+    
+    @staticmethod
+    def generate_master_data_template(template_type: str) -> bytes:
+        """Generate a template Excel file for data import"""
+        wb = Workbook()
+        ws = wb.active
+        
+        if template_type == "raw_materials":
+            ws.title = "Raw Materials"
+            headers = ["SKU", "Name", "Category", "UOM", "Manufacturer", "INCI Name", "Location", "Min Stock", "Notes"]
+        elif template_type == "packaging":
+            ws.title = "Packaging"
+            headers = ["SKU", "Name", "Category", "Sub Category", "Supplier", "Size/Specs", "UOM", "Location", "Min Stock"]
+        else:
+            ws.title = "Inventory Receipt"
+            headers = ["SKU", "Name", "Lot Number", "Quantity", "UOM", "Location", "Expiry Date", "Notes"]
+        
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+        
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return output.getvalue()
+
+
+class ImportPreviewService:
+    """Service for generating import previews"""
+    
+    @staticmethod
+    async def generate_preview(records: List[Dict], existing_items: Dict, key_field: str) -> Dict[str, Any]:
+        """Generate a preview of what changes would be made by an import"""
+        preview = {
+            "to_create": [],
+            "to_update": [],
+            "unchanged": [],
+            "errors": [],
+            "total_records": len(records)
+        }
+        
+        for record in records:
+            key = record.get(key_field, record.get("sku", ""))
+            if not key:
+                preview["errors"].append({"record": record, "error": f"Missing {key_field}"})
+                continue
+            
+            existing = existing_items.get(key)
+            
+            if existing:
+                # Check if anything changed
+                changed_fields = []
+                for field, value in record.items():
+                    if field.startswith("_"):
+                        continue
+                    existing_value = existing.get(field)
+                    if value != existing_value and value is not None:
+                        changed_fields.append({
+                            "field": field,
+                            "old": existing_value,
+                            "new": value
+                        })
+                
+                if changed_fields:
+                    preview["to_update"].append({
+                        "key": key,
+                        "changes": changed_fields
+                    })
+                else:
+                    preview["unchanged"].append(key)
+            else:
+                preview["to_create"].append({
+                    "key": key,
+                    "record": {k: v for k, v in record.items() if not k.startswith("_")}
+                })
+        
+        return preview
