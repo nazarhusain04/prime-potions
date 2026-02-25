@@ -2775,6 +2775,466 @@ async def import_packaging_prime_potions(
     
     return results
 
+@excel_router.post("/prime-potions/import-batching")
+async def import_batching_sheet(
+    file: UploadFile = File(...),
+    formula_id: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    user: dict = Depends(require_roles(["Admin", "Production"]))
+):
+    """
+    Import completed batching sheet with strict/flexible validation
+    
+    STRICT MODE (recipe_required=True):
+    - Validates ingredient list matches formula exactly
+    - Validates quantities within variance_tolerance_percent
+    - Rejects if validation fails
+    
+    FLEXIBLE MODE (recipe_required=False or no formula):
+    - Allows manual ingredient rows
+    - Only validates ingredient items exist
+    """
+    content = await file.read()
+    parsed = PrimePotionsExcelService.parse_batching_upload(content)
+    
+    if parsed["errors"]:
+        raise HTTPException(status_code=400, detail={
+            "message": "Parse errors",
+            "errors": parsed["errors"]
+        })
+    
+    # Get formula if provided
+    formula = None
+    formula_lines = []
+    strict_mode = False
+    variance_tolerance = 2.0
+    
+    if formula_id:
+        formula = await db.formulas.find_one({"id": formula_id}, {"_id": 0})
+        if formula:
+            strict_mode = formula.get("recipe_required", False)
+            variance_tolerance = formula.get("variance_tolerance_percent", 2.0)
+            formula_lines = await db.formula_lines.find(
+                {"formula_id": formula_id}, {"_id": 0}
+            ).sort("add_order", 1).to_list(200)
+    
+    # If batch_id provided, get formula from workspace
+    if batch_id and not formula:
+        workspace = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+        if workspace and workspace.get("formula_id"):
+            formula = await db.formulas.find_one({"id": workspace["formula_id"]}, {"_id": 0})
+            if formula:
+                strict_mode = formula.get("recipe_required", False)
+                variance_tolerance = formula.get("variance_tolerance_percent", 2.0)
+                formula_lines = await db.formula_lines.find(
+                    {"formula_id": formula["id"]}, {"_id": 0}
+                ).sort("add_order", 1).to_list(200)
+    
+    result = {
+        "mode": "STRICT" if strict_mode else "FLEXIBLE",
+        "validation": {"passed": True, "errors": [], "warnings": []},
+        "batch_record": None,
+        "consumptions": [],
+        "wip_production": None,
+        "transactions_created": 0
+    }
+    
+    # Build item lookup by name
+    all_items = await db.items.find({"type": "RAW"}, {"_id": 0}).to_list(10000)
+    item_by_name = {item.get("name", "").lower().strip(): item for item in all_items}
+    item_by_sku = {item.get("sku", "").upper(): item for item in all_items}
+    
+    # STRICT MODE VALIDATION
+    if strict_mode and formula_lines:
+        # Build expected ingredients from formula
+        expected_ingredients = {
+            line.get("ingredient_display_name", "").lower().strip(): line
+            for line in formula_lines if not line.get("optional", False)
+        }
+        
+        # Check each uploaded ingredient
+        uploaded_ingredients = {}
+        for ing in parsed["ingredients"]:
+            name_key = ing["ingredient_name"].lower().strip()
+            uploaded_ingredients[name_key] = ing
+        
+        # Check for missing required ingredients
+        for name, line in expected_ingredients.items():
+            if name not in uploaded_ingredients:
+                result["validation"]["errors"].append({
+                    "type": "MISSING_INGREDIENT",
+                    "ingredient": line.get("ingredient_display_name"),
+                    "message": f"Required ingredient '{line.get('ingredient_display_name')}' not found in upload"
+                })
+        
+        # Check for extra ingredients
+        for name, ing in uploaded_ingredients.items():
+            if name not in expected_ingredients:
+                # Check if it's optional
+                optional_line = next(
+                    (l for l in formula_lines 
+                     if l.get("ingredient_display_name", "").lower().strip() == name and l.get("optional")),
+                    None
+                )
+                if not optional_line:
+                    result["validation"]["warnings"].append({
+                        "type": "EXTRA_INGREDIENT",
+                        "ingredient": ing["ingredient_name"],
+                        "message": f"Ingredient '{ing['ingredient_name']}' not in recipe (will be added anyway)"
+                    })
+        
+        # Check quantities within tolerance
+        for name, ing in uploaded_ingredients.items():
+            if name in expected_ingredients:
+                expected_qty = expected_ingredients[name].get("default_qty_required", 0)
+                actual_qty = ing.get("actual_qty") or ing.get("qty_required", 0)
+                
+                if expected_qty > 0 and actual_qty > 0:
+                    variance_pct = abs(actual_qty - expected_qty) / expected_qty * 100
+                    if variance_pct > variance_tolerance:
+                        result["validation"]["errors"].append({
+                            "type": "QTY_VARIANCE",
+                            "ingredient": ing["ingredient_name"],
+                            "expected": expected_qty,
+                            "actual": actual_qty,
+                            "variance_percent": round(variance_pct, 2),
+                            "tolerance": variance_tolerance,
+                            "message": f"Qty variance {variance_pct:.1f}% exceeds tolerance {variance_tolerance}%"
+                        })
+        
+        # If strict validation fails, return errors
+        if result["validation"]["errors"]:
+            result["validation"]["passed"] = False
+            raise HTTPException(status_code=400, detail={
+                "message": "Strict recipe validation failed",
+                "result": result
+            })
+    
+    # FLEXIBLE MODE - Just validate items exist
+    else:
+        for ing in parsed["ingredients"]:
+            name_key = ing["ingredient_name"].lower().strip()
+            sku_key = ing["ingredient_name"].upper()
+            
+            if name_key not in item_by_name and sku_key not in item_by_sku:
+                result["validation"]["warnings"].append({
+                    "type": "UNKNOWN_ITEM",
+                    "ingredient": ing["ingredient_name"],
+                    "message": f"Item '{ing['ingredient_name']}' not found - will skip consumption"
+                })
+    
+    # CREATE BATCH RECORD
+    batch_code = parsed["batch_info"].get("batch_code") or f"BATCH-{datetime.now(timezone.utc).strftime('%y%m%d')}-{generate_id()[:4].upper()}"
+    
+    batch_record = {
+        "id": generate_id(),
+        "batch_code": batch_code,
+        "formula_id": formula["id"] if formula else None,
+        "formula_name": formula["name"] if formula else parsed["batch_info"].get("product_name", "Manual Batch"),
+        "status": "Completed",
+        "planned_qty": sum(ing.get("qty_required", 0) for ing in parsed["ingredients"]),
+        "actual_qty": parsed.get("finish_weight") or sum(ing.get("actual_qty") or ing.get("qty_required", 0) for ing in parsed["ingredients"]),
+        "batch_unit": "KG",
+        "created_at": get_timestamp(),
+        "created_by": user["id"],
+        "completed_at": get_timestamp(),
+        "source": "excel_import"
+    }
+    
+    await db.batches.insert_one(batch_record)
+    batch_record.pop("_id", None)
+    result["batch_record"] = batch_record
+    
+    # CREATE CONSUMPTION RECORDS + TRANSACTIONS
+    for ing in parsed["ingredients"]:
+        name_key = ing["ingredient_name"].lower().strip()
+        sku_key = ing["ingredient_name"].upper()
+        
+        item = item_by_name.get(name_key) or item_by_sku.get(sku_key)
+        if not item:
+            continue
+        
+        actual_qty = ing.get("actual_qty") or ing.get("qty_required", 0)
+        if not actual_qty or actual_qty <= 0:
+            continue
+        
+        # Create consumption record
+        consumption = {
+            "id": generate_id(),
+            "batch_id": batch_record["id"],
+            "item_id": item["id"],
+            "item_sku": item.get("sku", ""),
+            "item_name": item.get("name", ""),
+            "qty_used": actual_qty,
+            "uom": item.get("unit_of_measure", "KG"),
+            "lot_code": ing.get("lot_code", ""),
+            "process_notes": ing.get("process_notes", ""),
+            "batch_notes": ing.get("batch_notes", ""),
+            "created_at": get_timestamp()
+        }
+        await db.batch_consumptions.insert_one(consumption)
+        consumption.pop("_id", None)
+        result["consumptions"].append(consumption)
+        
+        # Create ISSUE transaction (negative qty)
+        transaction = {
+            "id": generate_id(),
+            "transaction_type": "ISSUE",
+            "item_id": item["id"],
+            "item_sku": item.get("sku", ""),
+            "item_name": item.get("name", ""),
+            "quantity": -actual_qty,
+            "unit_of_measure": item.get("unit_of_measure", "KG"),
+            "reference_type": "batch",
+            "reference_id": batch_record["id"],
+            "reference_code": batch_code,
+            "notes": f"Consumed for batch {batch_code}",
+            "created_at": get_timestamp(),
+            "created_by": user["id"]
+        }
+        await db.inventory_transactions.insert_one(transaction)
+        result["transactions_created"] += 1
+        
+        # Update stock snapshot
+        await db.stock_snapshots.update_one(
+            {"item_id": item["id"]},
+            {"$inc": {"quantity_on_hand": -actual_qty, "quantity_available": -actual_qty}},
+            upsert=True
+        )
+    
+    # CREATE WIP PRODUCTION (if finish weight provided)
+    if parsed.get("finish_weight") and parsed["finish_weight"] > 0:
+        wip_item = {
+            "id": generate_id(),
+            "sku": f"WIP-{batch_code}",
+            "name": f"WIP - {batch_record['formula_name']}",
+            "type": "WIP",
+            "created_at": get_timestamp()
+        }
+        await db.items.insert_one(wip_item)
+        
+        wip_transaction = {
+            "id": generate_id(),
+            "transaction_type": "PRODUCE",
+            "item_id": wip_item["id"],
+            "item_sku": wip_item["sku"],
+            "item_name": wip_item["name"],
+            "quantity": parsed["finish_weight"],
+            "unit_of_measure": "KG",
+            "lot_number": batch_code,
+            "reference_type": "batch",
+            "reference_id": batch_record["id"],
+            "reference_code": batch_code,
+            "notes": f"Produced from batch {batch_code}",
+            "created_at": get_timestamp(),
+            "created_by": user["id"]
+        }
+        await db.inventory_transactions.insert_one(wip_transaction)
+        result["transactions_created"] += 1
+        
+        # Create stock snapshot for WIP
+        wip_snapshot = {
+            "item_id": wip_item["id"],
+            "item_type": "WIP",
+            "lot_number": batch_code,
+            "quantity_on_hand": parsed["finish_weight"],
+            "quantity_available": parsed["finish_weight"],
+            "quantity_reserved": 0,
+            "status": "Available",
+            "created_at": get_timestamp()
+        }
+        await db.stock_snapshots.insert_one(wip_snapshot)
+        
+        result["wip_production"] = {
+            "item": wip_item,
+            "quantity": parsed["finish_weight"],
+            "lot_number": batch_code
+        }
+    
+    # Broadcast updates
+    await broadcast_update("inventory.updated", {"batch_id": batch_record["id"]})
+    await broadcast_update("batch.updated", {"batch_id": batch_record["id"], "status": "Completed"})
+    
+    await create_audit_log(user["id"], "batching_import", "batch", batch_record["id"], result)
+    
+    return result
+
+@excel_router.post("/import-wizard/analyze")
+async def analyze_excel_for_wizard(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """
+    Step 1 of Import Wizard: Analyze uploaded Excel file
+    Returns sheet names, headers, and suggested mappings
+    """
+    content = await file.read()
+    
+    analysis = ExcelService.analyze_workbook(content)
+    
+    # For each sheet, suggest mappings
+    for sheet in analysis["sheets"]:
+        # Determine likely data type
+        headers_lower = [h.lower() for h in sheet["headers"]]
+        
+        if any("ingredient" in h or "inci" in h or "raw" in h for h in headers_lower):
+            sheet["suggested_type"] = "raw_materials"
+            sheet["suggested_mappings"] = ExcelService.suggest_mappings(sheet["headers"], "raw_material")
+        elif any("packaging" in h or "pack" in h for h in headers_lower):
+            sheet["suggested_type"] = "packaging"
+            sheet["suggested_mappings"] = ExcelService.suggest_mappings(sheet["headers"], "packaging")
+        elif any("batch" in h or "formula" in h for h in headers_lower):
+            sheet["suggested_type"] = "batching"
+            sheet["suggested_mappings"] = {}
+        else:
+            sheet["suggested_type"] = "unknown"
+            sheet["suggested_mappings"] = ExcelService.suggest_mappings(sheet["headers"], "raw_material")
+    
+    return {
+        "filename": file.filename,
+        "analysis": analysis,
+        "total_sheets": len(analysis["sheets"]),
+        "supported_types": ["raw_materials", "packaging", "batching", "inventory_receipt"]
+    }
+
+@excel_router.post("/import-wizard/preview")
+async def preview_import_wizard(
+    file: UploadFile = File(...),
+    sheet_name: str = Query(...),
+    data_type: str = Query(...),
+    field_mappings: str = Query(...),  # JSON string
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """
+    Step 2 of Import Wizard: Preview changes
+    Shows what will be created/updated/skipped
+    """
+    content = await file.read()
+    mappings = json.loads(field_mappings)
+    
+    # Parse records using provided mappings
+    records = ExcelService.parse_excel_to_records(content, sheet_name, mappings)
+    
+    # Get existing items for comparison
+    existing_items = {}
+    if data_type == "raw_materials":
+        items = await db.items.find({"type": "RAW"}, {"_id": 0}).to_list(10000)
+        existing_items = {item.get("sku", ""): item for item in items if item.get("sku")}
+        key_field = "item_code"
+    elif data_type == "packaging":
+        items = await db.items.find({"type": "PACK"}, {"_id": 0}).to_list(10000)
+        existing_items = {item.get("name", ""): item for item in items if item.get("name")}
+        key_field = "name"
+    else:
+        key_field = "item_code"
+    
+    # Generate preview
+    preview = await ImportPreviewService.generate_preview(records, existing_items, key_field)
+    
+    return {
+        "sheet_name": sheet_name,
+        "data_type": data_type,
+        "preview": preview,
+        "summary": {
+            "to_create": len(preview["to_create"]),
+            "to_update": len(preview["to_update"]),
+            "unchanged": len(preview["unchanged"]),
+            "errors": len(preview["errors"])
+        }
+    }
+
+@excel_router.post("/import-wizard/apply")
+async def apply_import_wizard(
+    file: UploadFile = File(...),
+    sheet_name: str = Query(...),
+    data_type: str = Query(...),
+    field_mappings: str = Query(...),
+    user: dict = Depends(require_roles(["Admin"]))
+):
+    """
+    Step 3 of Import Wizard: Apply the import
+    Creates/updates records based on mappings
+    """
+    content = await file.read()
+    mappings = json.loads(field_mappings)
+    
+    records = ExcelService.parse_excel_to_records(content, sheet_name, mappings)
+    
+    results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+    
+    for record in records:
+        try:
+            if data_type == "raw_materials":
+                sku = record.get("item_code", "")
+                name = record.get("name", "")
+                
+                if not sku and not name:
+                    results["skipped"] += 1
+                    continue
+                
+                query = {"sku": sku, "type": "RAW"} if sku else {"name": name, "type": "RAW"}
+                existing = await db.items.find_one(query, {"_id": 0})
+                
+                item_doc = {
+                    "sku": sku or f"RM-{generate_id()[:8].upper()}",
+                    "name": name,
+                    "type": "RAW",
+                    "manufacturer": record.get("manufacturer", ""),
+                    "inci_name": record.get("inci_name", ""),
+                    "location": record.get("location", ""),
+                    "unit_of_measure": record.get("uom", "KG"),
+                    "min_stock_level": float(record.get("minimum_stock", 0) or 0),
+                    "category": record.get("category", ""),
+                    "is_active": True
+                }
+                
+                if existing:
+                    await db.items.update_one(query, {"$set": item_doc})
+                    results["updated"] += 1
+                else:
+                    item_doc["id"] = generate_id()
+                    item_doc["created_at"] = get_timestamp()
+                    await db.items.insert_one(item_doc)
+                    results["created"] += 1
+                    
+            elif data_type == "packaging":
+                name = record.get("name", "")
+                if not name:
+                    results["skipped"] += 1
+                    continue
+                
+                existing = await db.items.find_one({"name": name, "type": "PACK"}, {"_id": 0})
+                
+                item_doc = {
+                    "name": name,
+                    "type": "PACK",
+                    "category": record.get("category", ""),
+                    "sub_category": record.get("sub_category", ""),
+                    "supplier": record.get("supplier", ""),
+                    "size_specs": record.get("size_specs", ""),
+                    "unit_of_measure": record.get("uom", "EA"),
+                    "location": record.get("location", ""),
+                    "min_stock_level": float(record.get("minimum_stock", 0) or 0),
+                    "is_active": True
+                }
+                
+                if existing:
+                    await db.items.update_one({"name": name, "type": "PACK"}, {"$set": item_doc})
+                    results["updated"] += 1
+                else:
+                    item_doc["id"] = generate_id()
+                    item_doc["sku"] = f"PKG-{generate_id()[:8].upper()}"
+                    item_doc["created_at"] = get_timestamp()
+                    await db.items.insert_one(item_doc)
+                    results["created"] += 1
+                    
+        except Exception as e:
+            results["errors"].append(str(e))
+    
+    await create_audit_log(user["id"], "import_wizard", data_type, "bulk", results)
+    
+    return results
+
 # ============ BATCHING WORKSPACE ROUTES ============
 
 class BatchingWorkspaceCreate(BaseModel):
