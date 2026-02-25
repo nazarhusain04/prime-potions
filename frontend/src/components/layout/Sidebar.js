@@ -18,7 +18,8 @@ import {
   ChevronDown,
   ChevronRight,
   FileSpreadsheet,
-  Beaker
+  Beaker,
+  Wand2
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
