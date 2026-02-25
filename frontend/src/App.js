@@ -87,6 +87,7 @@ function App() {
                 
                 {/* Excel Sync & Batching */}
                 <Route path="/excel-sync" element={<ExcelSyncPage />} />
+                <Route path="/import-wizard" element={<ImportWizardPage />} />
                 <Route path="/batching" element={<BatchingWorkspacePage />} />
                 <Route path="/formulas" element={<FormulasPage />} />
                 
