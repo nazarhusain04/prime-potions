@@ -39,6 +39,7 @@ import { TraceabilityPage } from './pages/TraceabilityPage';
 import { ExcelSyncPage } from './pages/ExcelSyncPage';
 import { BatchingWorkspacePage } from './pages/BatchingWorkspacePage';
 import { FormulasPage } from './pages/FormulasPage';
+import { ImportWizardPage } from './pages/ImportWizardPage';
 
 // Admin
 import { UsersPage } from './pages/admin/UsersPage';
