@@ -265,16 +265,16 @@ class InventoryTransactionCreate(BaseModel):
 class InventoryTransactionResponse(BaseModel):
     id: str
     item_id: str
-    item_type: str
+    item_type: Optional[str] = None
     lot_number: str
-    location_id: str
+    location_id: Optional[str] = None
     transaction_type: str
     quantity: float
     unit_of_measure: str
-    reference_type: Optional[str]
-    reference_id: Optional[str]
-    status: str
-    notes: str
+    reference_type: Optional[str] = None
+    reference_id: Optional[str] = None
+    status: Optional[str] = "Available"
+    notes: Optional[str] = ""
     created_at: str
     created_by: str
 
