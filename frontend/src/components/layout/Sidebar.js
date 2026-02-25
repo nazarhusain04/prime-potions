@@ -41,8 +41,11 @@ const menuItems = [
   {
     label: 'Excel Sync',
     icon: FileSpreadsheet,
-    path: '/excel-sync',
-    roles: ['Admin', 'Warehouse', 'Production']
+    roles: ['Admin', 'Warehouse', 'Production'],
+    children: [
+      { label: 'Export/Import', path: '/excel-sync', icon: FileSpreadsheet },
+      { label: 'Import Wizard', path: '/import-wizard', icon: Wand2 }
+    ]
   },
   {
     label: 'Master Data',
