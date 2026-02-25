@@ -3012,6 +3012,7 @@ async def import_batching_sheet(
             "created_at": get_timestamp()
         }
         await db.items.insert_one(wip_item)
+        wip_item.pop("_id", None)  # Remove MongoDB _id
         
         wip_transaction = {
             "id": generate_id(),
@@ -3046,7 +3047,7 @@ async def import_batching_sheet(
         await db.stock_snapshots.insert_one(wip_snapshot)
         
         result["wip_production"] = {
-            "item": wip_item,
+            "item": {k: v for k, v in wip_item.items() if k != "_id"},
             "quantity": parsed["finish_weight"],
             "lot_number": batch_code
         }
