@@ -41,9 +41,8 @@ export const LoginPage = () => {
   const handleSeedData = async () => {
     setSeeding(true);
     try {
-      const response = await seedApi.seed();
+      await seedApi.seed();
       toast.success('Demo data seeded! Use admin@primepotions.com / admin123');
-      console.log('Seed result:', response.data);
     } catch (error) {
       if (error.response?.data?.message?.includes('already exists')) {
         toast.info('Demo data already exists');
