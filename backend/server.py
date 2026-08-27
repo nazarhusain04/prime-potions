@@ -26,7 +26,12 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Settings
-JWT_SECRET = os.environ.get('JWT_SECRET', 'prime-potions-secret-key-2024')
+JWT_SECRET = os.environ.get('JWT_SECRET')
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET environment variable must be set (no default — this repo is public). "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
@@ -101,6 +106,7 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
+    password: Optional[str] = None
 
 # Company Settings
 class CompanySettingsModel(BaseModel):
@@ -490,38 +496,6 @@ async def broadcast_update(event_type: str, data: dict):
 
 # ============ AUTH ROUTES ============
 
-@auth_router.post("/register", response_model=TokenResponse)
-async def register(user_data: UserCreate):
-    existing = await db.users.find_one({"email": user_data.email})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    user_id = generate_id()
-    user = {
-        "id": user_id,
-        "email": user_data.email,
-        "password_hash": hash_password(user_data.password),
-        "full_name": user_data.full_name,
-        "role": user_data.role,
-        "is_active": True,
-        "created_at": get_timestamp()
-    }
-    await db.users.insert_one(user)
-    
-    token = create_token(user_id, user["email"], user["role"])
-    
-    return TokenResponse(
-        access_token=token,
-        user=UserResponse(
-            id=user_id,
-            email=user["email"],
-            full_name=user["full_name"],
-            role=user["role"],
-            is_active=True,
-            created_at=user["created_at"]
-        )
-    )
-
 @auth_router.post("/login", response_model=TokenResponse)
 async def login(credentials: UserLogin):
     user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
@@ -558,7 +532,32 @@ async def get_me(user: dict = Depends(get_current_user)):
 
 # ============ USER ROUTES ============
 
-@users_router.get("/", response_model=List[UserResponse])
+@users_router.post("", response_model=UserResponse)
+async def create_user(data: UserCreate, user: dict = Depends(require_roles(["Admin"]))):
+    """Create a new user account (Admin only)"""
+    existing = await db.users.find_one({"email": data.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    valid_roles = ["Admin", "Production", "Warehouse", "QA", "Viewer"]
+    if data.role not in valid_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {valid_roles}")
+
+    new_user = {
+        "id": generate_id(),
+        "email": data.email,
+        "password_hash": hash_password(data.password),
+        "full_name": data.full_name,
+        "role": data.role,
+        "is_active": True,
+        "created_at": get_timestamp()
+    }
+    await db.users.insert_one(new_user)
+    await create_audit_log(user["id"], "create", "user", new_user["id"], {"email": data.email, "role": data.role})
+
+    return UserResponse(**{k: v for k, v in new_user.items() if k != "password_hash"})
+
+@users_router.get("", response_model=List[UserResponse])
 async def list_users(user: dict = Depends(require_roles(["Admin"]))):
     users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
     return [UserResponse(**u) for u in users]
@@ -575,7 +574,10 @@ async def update_user(user_id: str, update: UserUpdate, user: dict = Depends(req
     update_data = {k: v for k, v in update.model_dump().items() if v is not None}
     if not update_data:
         raise HTTPException(status_code=400, detail="No update data provided")
-    
+
+    if "password" in update_data:
+        update_data["password_hash"] = hash_password(update_data.pop("password"))
+
     result = await db.users.find_one_and_update(
         {"id": user_id},
         {"$set": update_data},
@@ -583,9 +585,12 @@ async def update_user(user_id: str, update: UserUpdate, user: dict = Depends(req
     )
     if not result:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    await create_audit_log(user["id"], "update", "user", user_id, update_data)
-    
+
+    audit_data = {k: v for k, v in update_data.items() if k != "password_hash"}
+    if "password_hash" in update_data:
+        audit_data["password"] = "(changed)"
+    await create_audit_log(user["id"], "update", "user", user_id, audit_data)
+
     return UserResponse(
         id=result["id"],
         email=result["email"],
@@ -676,14 +681,33 @@ async def create_raw_material(data: RawMaterialCreate, user: dict = Depends(requ
     await create_audit_log(user["id"], "create", "raw_material", material["id"], data.model_dump())
     return RawMaterialResponse(**material)
 
+def _item_to_raw_material(it: dict) -> dict:
+    """Normalize a unified `items` (type=RAW) document into the legacy RawMaterial shape."""
+    return {
+        "id": it.get("id"),
+        "sku": it.get("sku") or "",
+        "name": it.get("name") or "",
+        "description": it.get("inci_name") or "",
+        "unit_of_measure": it.get("unit_of_measure") or "",
+        "reorder_point": it.get("min_stock_level") or 0.0,
+        "category": it.get("category") or "",
+        "is_active": it.get("is_active", True),
+    }
+
 @master_router.get("/raw-materials", response_model=List[RawMaterialResponse])
 async def list_raw_materials():
     materials = await db.raw_materials.find({}, {"_id": 0}).to_list(1000)
+    imported_items = await db.items.find({"type": "RAW"}, {"_id": 0}).to_list(10000)
+    materials.extend(_item_to_raw_material(it) for it in imported_items)
     return [RawMaterialResponse(**m) for m in materials]
 
 @master_router.get("/raw-materials/{material_id}", response_model=RawMaterialResponse)
 async def get_raw_material(material_id: str):
     m = await db.raw_materials.find_one({"id": material_id}, {"_id": 0})
+    if not m:
+        it = await db.items.find_one({"id": material_id, "type": "RAW"}, {"_id": 0})
+        if it:
+            m = _item_to_raw_material(it)
     if not m:
         raise HTTPException(status_code=404, detail="Raw material not found")
     return RawMaterialResponse(**m)
@@ -712,14 +736,33 @@ async def create_packaging_material(data: PackagingMaterialCreate, user: dict = 
     await create_audit_log(user["id"], "create", "packaging_material", material["id"], data.model_dump())
     return PackagingMaterialResponse(**material)
 
+def _item_to_packaging_material(it: dict) -> dict:
+    """Normalize a unified `items` (type=PACK) document into the legacy PackagingMaterial shape."""
+    return {
+        "id": it.get("id"),
+        "sku": it.get("sku") or "",
+        "name": it.get("name") or "",
+        "description": it.get("size_specs") or "",
+        "unit_of_measure": it.get("unit_of_measure") or "",
+        "reorder_point": it.get("min_stock_level") or 0.0,
+        "category": it.get("category") or "",
+        "is_active": it.get("is_active", True),
+    }
+
 @master_router.get("/packaging-materials", response_model=List[PackagingMaterialResponse])
 async def list_packaging_materials():
     materials = await db.packaging_materials.find({}, {"_id": 0}).to_list(1000)
+    imported_items = await db.items.find({"type": "PACK"}, {"_id": 0}).to_list(10000)
+    materials.extend(_item_to_packaging_material(it) for it in imported_items)
     return [PackagingMaterialResponse(**m) for m in materials]
 
 @master_router.get("/packaging-materials/{material_id}", response_model=PackagingMaterialResponse)
 async def get_packaging_material(material_id: str):
     m = await db.packaging_materials.find_one({"id": material_id}, {"_id": 0})
+    if not m:
+        it = await db.items.find_one({"id": material_id, "type": "PACK"}, {"_id": 0})
+        if it:
+            m = _item_to_packaging_material(it)
     if not m:
         raise HTTPException(status_code=404, detail="Packaging material not found")
     return PackagingMaterialResponse(**m)
@@ -3126,6 +3169,8 @@ async def preview_import_wizard(
         items = await db.items.find({"type": "PACK"}, {"_id": 0}).to_list(10000)
         existing_items = {item.get("name", ""): item for item in items if item.get("name")}
         key_field = "name"
+    elif data_type == "inventory_receipt":
+        key_field = "lot_number"
     else:
         key_field = "item_code"
     
@@ -3228,12 +3273,77 @@ async def apply_import_wizard(
                     item_doc["created_at"] = get_timestamp()
                     await db.items.insert_one(item_doc)
                     results["created"] += 1
-                    
+
+            elif data_type == "inventory_receipt":
+                sku = (record.get("item_code") or "").strip()
+                lot_number = (record.get("lot_number") or "").strip()
+                quantity = record.get("quantity")
+                location_code = (record.get("location") or "").strip()
+
+                if not sku:
+                    results["skipped"] += 1
+                    continue
+
+                try:
+                    quantity = float(quantity) if quantity not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    quantity = 0.0
+
+                if quantity <= 0:
+                    results["skipped"] += 1
+                    continue
+
+                item = await db.items.find_one({"sku": sku}, {"_id": 0})
+                if not item:
+                    results["errors"].append(f"Unknown item code: {sku}")
+                    continue
+
+                location = await db.locations.find_one({"code": location_code}, {"_id": 0}) if location_code else None
+                if not location:
+                    results["errors"].append(f"Unknown location '{location_code}' for item {sku}")
+                    continue
+
+                if not lot_number:
+                    lot_number = await generate_lot_number("RM" if item.get("type") == "RAW" else "PKG")
+
+                item_type = "raw_material" if item.get("type") == "RAW" else "packaging_material"
+
+                existing_txn = await db.inventory_transactions.find_one({
+                    "item_id": item["id"],
+                    "lot_number": lot_number,
+                    "location_id": location["id"],
+                    "transaction_type": "receive",
+                    "reference_type": "excel_import"
+                }, {"_id": 0})
+                if existing_txn:
+                    results["skipped"] += 1
+                    continue
+
+                notes = f"Imported from {sheet_name}"
+                expiry_date = record.get("expiry_date")
+                if expiry_date:
+                    notes += f" | Expiry: {expiry_date}"
+
+                transaction = InventoryTransactionCreate(
+                    item_id=item["id"],
+                    item_type=item_type,
+                    lot_number=lot_number,
+                    location_id=location["id"],
+                    transaction_type="receive",
+                    quantity=quantity,
+                    unit_of_measure=record.get("uom") or item.get("unit_of_measure", "KG"),
+                    reference_type="excel_import",
+                    status="Available",
+                    notes=notes
+                )
+                await create_inventory_transaction(transaction, user)
+                results["created"] += 1
+
         except Exception as e:
             results["errors"].append(str(e))
-    
+
     await create_audit_log(user["id"], "import_wizard", data_type, "bulk", results)
-    
+
     return results
 
 # ============ BATCHING WORKSPACE ROUTES ============
@@ -3772,10 +3882,12 @@ api_router.include_router(search_router)
 app.include_router(api_router)
 
 # CORS
+_cors_origins_env = os.environ.get('CORS_ORIGINS', '')
+_cors_origins = [o.strip() for o in _cors_origins_env.split(',') if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
