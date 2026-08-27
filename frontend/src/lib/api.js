@@ -36,7 +36,6 @@ api.interceptors.response.use(
 // Auth API
 export const authApi = {
   login: (email, password) => api.post('/auth/login', { email, password }),
-  register: (data) => api.post('/auth/register', data),
   getMe: () => api.get('/auth/me'),
 };
 
@@ -44,6 +43,7 @@ export const authApi = {
 export const usersApi = {
   list: () => api.get('/users'),
   get: (id) => api.get(`/users/${id}`),
+  create: (data) => api.post('/users', data),
   update: (id, data) => api.put(`/users/${id}`, data),
 };
 

@@ -29,9 +29,12 @@ import {
 } from '../../components/ui/select';
 import { Switch } from '../../components/ui/switch';
 import { Label } from '../../components/ui/label';
+import { Input } from '../../components/ui/input';
 import { toast } from 'sonner';
-import { Users, Edit, Loader2 } from 'lucide-react';
+import { Users, Edit, Loader2, Plus } from 'lucide-react';
 import { cn, formatDate, getRoleColor } from '../../lib/utils';
+
+const emptyNewUser = { email: '', full_name: '', password: '', role: 'Viewer' };
 
 export const UsersPage = () => {
   const { user: currentUser } = useAuth();
@@ -39,7 +42,11 @@ export const UsersPage = () => {
   const [loading, setLoading] = useState(true);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
+  const [newPassword, setNewPassword] = useState('');
   const [saving, setSaving] = useState(false);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [newUser, setNewUser] = useState(emptyNewUser);
+  const [creating, setCreating] = useState(false);
 
   const roles = ['Admin', 'Production', 'Warehouse', 'QA', 'Viewer'];
 
@@ -60,6 +67,7 @@ export const UsersPage = () => {
 
   const handleEditUser = (user) => {
     setSelectedUser({ ...user });
+    setNewPassword('');
     setEditDialogOpen(true);
   };
 
@@ -68,11 +76,15 @@ export const UsersPage = () => {
     setSaving(true);
 
     try {
-      await usersApi.update(selectedUser.id, {
+      const payload = {
         full_name: selectedUser.full_name,
         role: selectedUser.role,
         is_active: selectedUser.is_active
-      });
+      };
+      if (newPassword) {
+        payload.password = newPassword;
+      }
+      await usersApi.update(selectedUser.id, payload);
       toast.success('User updated');
       setEditDialogOpen(false);
       fetchUsers();
@@ -80,6 +92,25 @@ export const UsersPage = () => {
       toast.error(error.response?.data?.detail || 'Failed to update user');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleCreateUser = async () => {
+    if (!newUser.email || !newUser.full_name || !newUser.password) {
+      toast.error('Email, name, and password are required');
+      return;
+    }
+    setCreating(true);
+    try {
+      await usersApi.create(newUser);
+      toast.success('User created');
+      setAddDialogOpen(false);
+      setNewUser(emptyNewUser);
+      fetchUsers();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create user');
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -93,10 +124,82 @@ export const UsersPage = () => {
 
   return (
     <div className="space-y-6" data-testid="users-page">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">User Management</h1>
-        <p className="text-slate-500">Manage system users and their roles</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">User Management</h1>
+          <p className="text-slate-500">Manage system users and their roles</p>
+        </div>
+        <Button className="btn-primary" onClick={() => setAddDialogOpen(true)} data-testid="add-user-btn">
+          <Plus className="w-4 h-4 mr-2" />
+          Add User
+        </Button>
       </div>
+
+      {/* Add Dialog */}
+      <Dialog open={addDialogOpen} onOpenChange={(open) => { setAddDialogOpen(open); if (!open) setNewUser(emptyNewUser); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add User</DialogTitle>
+            <DialogDescription>Create a new account with its own login credentials</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="new-user-name">Full Name</Label>
+              <Input
+                id="new-user-name"
+                value={newUser.full_name}
+                onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
+                data-testid="new-user-name-input"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-user-email">Email</Label>
+              <Input
+                id="new-user-email"
+                type="email"
+                value={newUser.email}
+                onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
+                data-testid="new-user-email-input"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-user-password">Password</Label>
+              <Input
+                id="new-user-password"
+                type="password"
+                value={newUser.password}
+                onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                data-testid="new-user-password-input"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Role</Label>
+              <Select
+                value={newUser.role}
+                onValueChange={(v) => setNewUser({ ...newUser, role: v })}
+              >
+                <SelectTrigger data-testid="new-user-role-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {roles.map((r) => (
+                    <SelectItem key={r} value={r}>{r}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button className="btn-primary" onClick={handleCreateUser} disabled={creating} data-testid="create-user-btn">
+              {creating && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Create User
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit Dialog */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
@@ -139,6 +242,17 @@ export const UsersPage = () => {
                   onCheckedChange={(v) => setSelectedUser({ ...selectedUser, is_active: v })}
                   disabled={selectedUser.id === currentUser?.id}
                   data-testid="edit-active-switch"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-password">New Password</Label>
+                <Input
+                  id="edit-password"
+                  type="password"
+                  placeholder="Leave blank to keep current password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  data-testid="edit-password-input"
                 />
               </div>
             </div>
