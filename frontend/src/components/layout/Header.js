@@ -1,7 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { useCompany } from '../../contexts/CompanyContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { Button } from '../ui/button';
 import {
@@ -21,10 +20,10 @@ import {
   WifiOff
 } from 'lucide-react';
 import { cn, getRoleColor } from '../../lib/utils';
+import logo from '../../assets/logo.png';
 
 export const Header = ({ onToggleSidebar }) => {
   const { user, logout } = useAuth();
-  const { company } = useCompany();
   const { connected } = useWebSocket();
   const navigate = useNavigate();
 
@@ -45,9 +44,7 @@ export const Header = ({ onToggleSidebar }) => {
         >
           <Menu className="w-5 h-5" />
         </Button>
-        <h1 className="text-lg font-semibold text-slate-900">
-          {company.company_name} <span className="text-slate-400 font-normal">ERP</span>
-        </h1>
+        <img src={logo} alt="Prime Potions" className="h-8 w-auto object-contain lg:hidden" />
       </div>
 
       <div className="flex items-center gap-4">

@@ -7,6 +7,7 @@ import { WebSocketProvider } from './contexts/WebSocketContext';
 
 // Layout
 import { MainLayout } from './components/layout/MainLayout';
+import { ProtectedRoute } from './components/auth/ProtectedRoute';
 
 // Pages
 import { LoginPage } from './pages/LoginPage';
@@ -76,25 +77,35 @@ function App() {
                 <Route path="/inventory/transactions" element={<TransactionsPage />} />
                 <Route path="/inventory/receive" element={<ReceivePage />} />
                 
-                {/* Manufacturing */}
-                <Route path="/manufacturing/batches" element={<BatchOrdersPage />} />
-                <Route path="/manufacturing/filling" element={<FillingOrdersPage />} />
-                <Route path="/manufacturing/feasibility" element={<FeasibilityPage />} />
-                <Route path="/manufacturing/wip" element={<WipOnFloorPage />} />
-                
                 {/* Traceability */}
                 <Route path="/traceability" element={<TraceabilityPage />} />
-                
-                {/* Excel Sync & Batching */}
-                <Route path="/excel-sync" element={<ExcelSyncPage />} />
-                <Route path="/import-wizard" element={<ImportWizardPage />} />
-                <Route path="/batching" element={<BatchingWorkspacePage />} />
-                <Route path="/formulas" element={<FormulasPage />} />
-                
-                {/* Admin */}
-                <Route path="/admin/users" element={<UsersPage />} />
-                <Route path="/admin/settings" element={<CompanySettingsPage />} />
-                <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
+
+                {/* Manufacturing - Admin, Production, QA only */}
+                <Route element={<ProtectedRoute roles={['Admin', 'Production', 'QA']} />}>
+                  <Route path="/manufacturing/batches" element={<BatchOrdersPage />} />
+                  <Route path="/manufacturing/filling" element={<FillingOrdersPage />} />
+                  <Route path="/manufacturing/feasibility" element={<FeasibilityPage />} />
+                  <Route path="/manufacturing/wip" element={<WipOnFloorPage />} />
+                </Route>
+
+                {/* Excel Sync - Admin, Warehouse, Production only */}
+                <Route element={<ProtectedRoute roles={['Admin', 'Warehouse', 'Production']} />}>
+                  <Route path="/excel-sync" element={<ExcelSyncPage />} />
+                  <Route path="/import-wizard" element={<ImportWizardPage />} />
+                </Route>
+
+                {/* Batching - Admin, Production only */}
+                <Route element={<ProtectedRoute roles={['Admin', 'Production']} />}>
+                  <Route path="/batching" element={<BatchingWorkspacePage />} />
+                  <Route path="/formulas" element={<FormulasPage />} />
+                </Route>
+
+                {/* Admin - Admin only */}
+                <Route element={<ProtectedRoute roles={['Admin']} />}>
+                  <Route path="/admin/users" element={<UsersPage />} />
+                  <Route path="/admin/settings" element={<CompanySettingsPage />} />
+                  <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
+                </Route>
               </Route>
               
               {/* Redirects */}

@@ -22,6 +22,7 @@ import {
   Wand2
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import logo from '../../assets/logo.png';
 
 const menuItems = [
   {
@@ -172,23 +173,12 @@ export const Sidebar = ({ collapsed = false }) => {
       collapsed ? "w-16" : "w-64"
     )}>
       {/* Logo */}
-      <div className="p-4 border-b border-slate-200">
-        <div className="flex items-center gap-3">
-          <div 
-            className="w-10 h-10 rounded-md flex items-center justify-center text-white font-bold text-lg"
-            style={{ backgroundColor: company.primary_color }}
-          >
-            PP
-          </div>
-          {!collapsed && (
-            <div>
-              <h1 className="font-bold text-slate-900 text-sm leading-tight">
-                {company.company_name}
-              </h1>
-              <p className="text-xs text-slate-500">ERP System</p>
-            </div>
-          )}
-        </div>
+      <div className="p-4 border-b border-slate-200 flex items-center justify-center h-[65px]">
+        <img
+          src={logo}
+          alt="Prime Potions"
+          className={cn("w-auto object-contain transition-all duration-300", collapsed ? "h-6" : "h-9")}
+        />
       </div>
 
       {/* Navigation */}
