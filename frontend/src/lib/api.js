@@ -116,6 +116,7 @@ export const inventoryApi = {
   listTransactions: (params) => api.get('/inventory/transactions', { params }),
   createTransaction: (data) => api.post('/inventory/transactions', data),
   receive: (params) => api.post('/inventory/receive', null, { params }),
+  transfer: (data) => api.post('/inventory/transfer', data),
 };
 
 // Manufacturing API

@@ -22,8 +22,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../../components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../components/ui/dialog';
+import { Combobox } from '../../components/ui/combobox';
+import { Label } from '../../components/ui/label';
 import { toast } from 'sonner';
-import { Search, Boxes, RefreshCw } from 'lucide-react';
+import { Search, Boxes, RefreshCw, ArrowRightLeft, Loader2 } from 'lucide-react';
 import { cn, formatNumber, getStatusColor } from '../../lib/utils';
 
 export const StockPage = () => {
@@ -35,6 +45,10 @@ export const StockPage = () => {
   const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '');
   const [selectedType, setSelectedType] = useState('all');
   const [selectedLocation, setSelectedLocation] = useState('all');
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [moveTarget, setMoveTarget] = useState(null);
+  const [moveForm, setMoveForm] = useState({ to_location_id: '', quantity: '', notes: '' });
+  const [moving, setMoving] = useState(false);
   const { subscribe } = useWebSocket();
 
   const fetchData = async () => {
@@ -70,6 +84,36 @@ export const StockPage = () => {
 
   const getLocationName = (id) => locations.find(l => l.id === id)?.name || 'Unknown';
   const getItem = (id) => itemsById[id];
+
+  const openMoveDialog = (stockItem) => {
+    setMoveTarget(stockItem);
+    setMoveForm({ to_location_id: '', quantity: String(stockItem.quantity_available), notes: '' });
+    setMoveDialogOpen(true);
+  };
+
+  const handleMove = async (e) => {
+    e.preventDefault();
+    if (!moveTarget) return;
+    setMoving(true);
+    try {
+      await inventoryApi.transfer({
+        item_id: moveTarget.item_id,
+        item_type: moveTarget.item_type,
+        lot_number: moveTarget.lot_number,
+        from_location_id: moveTarget.location_id,
+        to_location_id: moveForm.to_location_id,
+        quantity: parseFloat(moveForm.quantity),
+        notes: moveForm.notes
+      });
+      toast.success(`Moved ${moveForm.quantity} ${moveTarget.unit_of_measure} to ${getLocationName(moveForm.to_location_id)}`);
+      setMoveDialogOpen(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to move stock');
+    } finally {
+      setMoving(false);
+    }
+  };
 
   const filteredStock = stock.filter(s => {
     const item = getItem(s.item_id);
@@ -110,6 +154,7 @@ export const StockPage = () => {
           <TableHead className="text-xs uppercase text-right">Reserved</TableHead>
           <TableHead className="text-xs uppercase">Unit</TableHead>
           <TableHead className="text-xs uppercase">Status</TableHead>
+          <TableHead className="text-xs uppercase">Actions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -139,12 +184,25 @@ export const StockPage = () => {
                     {stockItem.status}
                   </Badge>
                 </TableCell>
+                <TableCell>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    disabled={stockItem.quantity_available <= 0}
+                    onClick={() => openMoveDialog(stockItem)}
+                    data-testid={`move-stock-${stockItem.lot_number}`}
+                  >
+                    <ArrowRightLeft className="w-3.5 h-3.5" />
+                    Move
+                  </Button>
+                </TableCell>
               </TableRow>
             );
           })
         ) : (
           <TableRow>
-            <TableCell colSpan={8} className="text-center py-8">
+            <TableCell colSpan={9} className="text-center py-8">
               <Boxes className="w-8 h-8 text-slate-300 mx-auto mb-2" />
               <p className="text-sm text-slate-500">{emptyMessage}</p>
             </TableCell>
@@ -259,6 +317,77 @@ export const StockPage = () => {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Move Stock</DialogTitle>
+            <DialogDescription>
+              {moveTarget && (
+                <>
+                  Lot <span className="lot-number">{moveTarget.lot_number}</span> - currently at{' '}
+                  <strong>{getLocationName(moveTarget.location_id)}</strong>, {formatNumber(moveTarget.quantity_available, 2)} {moveTarget.unit_of_measure} available
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleMove} className="space-y-4">
+            <div className="space-y-2">
+              <Label>Move To *</Label>
+              <Combobox
+                data-testid="move-to-location-select"
+                value={moveForm.to_location_id}
+                onValueChange={(v) => setMoveForm({ ...moveForm, to_location_id: v })}
+                placeholder="Select destination location"
+                searchPlaceholder="Search locations..."
+                emptyText="No location found."
+                options={locations
+                  .filter((l) => l.id !== moveTarget?.location_id)
+                  .map((l) => ({ value: l.id, label: `${l.name} (${l.code})` }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Quantity *</Label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                max={moveTarget?.quantity_available}
+                value={moveForm.quantity}
+                onChange={(e) => setMoveForm({ ...moveForm, quantity: e.target.value })}
+                required
+                data-testid="move-quantity-input"
+              />
+              <p className="text-xs text-slate-400">
+                Up to {moveTarget ? formatNumber(moveTarget.quantity_available, 2) : 0} {moveTarget?.unit_of_measure} available
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Notes (optional)</Label>
+              <Input
+                value={moveForm.notes}
+                onChange={(e) => setMoveForm({ ...moveForm, notes: e.target.value })}
+                placeholder="e.g. relocating to real packaging zone"
+                data-testid="move-notes-input"
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setMoveDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                className="btn-primary"
+                disabled={moving || !moveForm.to_location_id || !moveForm.quantity}
+                data-testid="confirm-move-btn"
+              >
+                {moving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Move Stock
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
