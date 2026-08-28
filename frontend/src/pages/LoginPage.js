@@ -121,7 +121,17 @@ export const LoginPage = () => {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="password">Password</Label>
+                    <button
+                      type="button"
+                      onClick={() => toast.info('Contact your system administrator to reset your password.')}
+                      className="text-xs text-slate-500 hover:text-[#0F5132] hover:underline"
+                      data-testid="forgot-password-link"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
                   <Input
                     id="password"
                     type="password"
@@ -133,8 +143,8 @@ export const LoginPage = () => {
                     data-testid="login-password-input"
                   />
                 </div>
-                <Button 
-                  type="submit" 
+                <Button
+                  type="submit"
                   className="w-full btn-primary"
                   disabled={loading}
                   data-testid="login-submit-btn"
@@ -143,6 +153,9 @@ export const LoginPage = () => {
                   Sign in
                 </Button>
               </form>
+              <p className="text-center text-xs text-slate-400 mt-4">
+                No account? Contact your administrator to get access.
+              </p>
             </CardContent>
           </Card>
         </div>

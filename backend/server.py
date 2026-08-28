@@ -35,6 +35,9 @@ if not JWT_SECRET:
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
+# Only company email addresses may be granted accounts - set via env if the domain changes.
+ALLOWED_USER_EMAIL_DOMAIN = os.environ.get('ALLOWED_USER_EMAIL_DOMAIN', 'primepotions.com').lower()
+
 # Create the main app
 app = FastAPI(title="Prime Potions ERP API", redirect_slashes=False)
 
@@ -88,6 +91,10 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 class UserResponse(BaseModel):
     id: str
@@ -530,11 +537,27 @@ async def get_me(user: dict = Depends(get_current_user)):
         created_at=user["created_at"]
     )
 
+@auth_router.post("/change-password")
+async def change_own_password(data: ChangePasswordRequest, user: dict = Depends(get_current_user)):
+    """Let a logged-in user change their own password (requires their current password)."""
+    full_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    if not full_user or not verify_password(data.current_password, full_user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(data.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    await db.users.update_one({"id": user["id"]}, {"$set": {"password_hash": hash_password(data.new_password)}})
+    await create_audit_log(user["id"], "change_password", "user", user["id"], {})
+    return {"message": "Password updated"}
+
 # ============ USER ROUTES ============
 
 @users_router.post("", response_model=UserResponse)
 async def create_user(data: UserCreate, user: dict = Depends(require_roles(["Admin"]))):
-    """Create a new user account (Admin only)"""
+    """Create a new user account (Admin only). Restricted to company email addresses."""
+    if not data.email.lower().endswith(f"@{ALLOWED_USER_EMAIL_DOMAIN}"):
+        raise HTTPException(status_code=400, detail=f"Only @{ALLOWED_USER_EMAIL_DOMAIN} email addresses can be added")
+
     existing = await db.users.find_one({"email": data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
