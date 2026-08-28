@@ -276,6 +276,15 @@ class InventoryTransactionCreate(BaseModel):
     status: str = "Available"  # Available, Reserved, Quarantine, Scrap
     notes: Optional[str] = ""
 
+class InventoryTransferRequest(BaseModel):
+    item_id: str
+    item_type: str
+    lot_number: str
+    from_location_id: str
+    to_location_id: str
+    quantity: float
+    notes: Optional[str] = ""
+
 class InventoryTransactionResponse(BaseModel):
     id: str
     item_id: str
@@ -1506,6 +1515,55 @@ async def receive_inventory(
     
     result = await create_inventory_transaction(transaction, user)
     return {"lot_number": lot_number, "transaction": result}
+
+@inventory_router.post("/transfer")
+async def transfer_inventory(
+    data: InventoryTransferRequest,
+    user: dict = Depends(require_roles(["Admin", "Warehouse"]))
+):
+    """Move quantity of a lot from one location to another, keeping the same lot number."""
+    if data.from_location_id == data.to_location_id:
+        raise HTTPException(status_code=400, detail="Source and destination locations must be different")
+    if data.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
+
+    source = await db.stock_snapshots.find_one({
+        "item_id": data.item_id,
+        "item_type": data.item_type,
+        "lot_number": data.lot_number,
+        "location_id": data.from_location_id
+    }, {"_id": 0})
+    available = source.get("quantity_available", 0) if source else 0
+    if data.quantity > available:
+        raise HTTPException(status_code=400, detail=f"Insufficient inventory at source. Available: {available}")
+
+    unit_of_measure = source.get("unit_of_measure", "EA")
+    notes = data.notes or f"Transfer to {data.to_location_id}"
+
+    for location_id, quantity in [(data.from_location_id, -data.quantity), (data.to_location_id, data.quantity)]:
+        transaction = {
+            "id": generate_id(),
+            "item_id": data.item_id,
+            "item_type": data.item_type,
+            "lot_number": data.lot_number,
+            "location_id": location_id,
+            "transaction_type": "transfer",
+            "quantity": quantity,
+            "unit_of_measure": unit_of_measure,
+            "reference_type": "transfer",
+            "reference_id": None,
+            "status": "Available",
+            "notes": notes,
+            "created_at": get_timestamp(),
+            "created_by": user["id"]
+        }
+        await db.inventory_transactions.insert_one(transaction)
+        await update_stock_snapshot(data.item_id, data.item_type, data.lot_number, location_id)
+
+    await broadcast_update("inventory.updated", {"item_id": data.item_id, "lot_number": data.lot_number})
+    await create_audit_log(user["id"], "transfer", "inventory", data.item_id, data.model_dump())
+
+    return {"message": "Transfer complete", "lot_number": data.lot_number, "quantity": data.quantity}
 
 # ============ MANUFACTURING ROUTES ============
 
@@ -3523,7 +3581,9 @@ async def create_batching_workspace(
                     "percent": percent,
                     "planned_qty": planned_qty,
                     "uom": line.get("uom", "KG"),
-                    "notes": line.get("notes", "")
+                    "add_order": line.get("add_order", ""),
+                    "process_notes": line.get("process_notes", ""),
+                    "batch_notes": line.get("batch_notes", "")
                 })
     
     workspace = {
@@ -3604,9 +3664,9 @@ async def download_batching_sheet(batch_id: str, user: dict = Depends(get_curren
         {
             "ingredient_display_name": ing.get("name") or ing.get("sku", ""),
             "default_qty_required": ing.get("planned_qty", 0),
-            "add_order": "",
-            "process_notes": ing.get("notes", ""),
-            "batch_notes": "",
+            "add_order": ing.get("add_order", ""),
+            "process_notes": ing.get("process_notes", ""),
+            "batch_notes": ing.get("batch_notes", ""),
             "percent": ing.get("percent", "")
         }
         for ing in workspace.get("ingredients", [])
