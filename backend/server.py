@@ -16,6 +16,7 @@ import bcrypt
 import json
 import asyncio
 import io
+import re
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -749,6 +750,102 @@ def _item_to_packaging_material(it: dict) -> dict:
         "is_active": it.get("is_active", True),
     }
 
+async def find_raw_material(id: str = None, sku: str = None) -> Optional[dict]:
+    """Look up a raw material by id or sku, checking both the legacy raw_materials
+    collection and the unified items collection (where Excel-imported materials live)."""
+    query = {}
+    if id:
+        query["id"] = id
+    if sku:
+        query["sku"] = sku
+    if not query:
+        return None
+    m = await db.raw_materials.find_one(query, {"_id": 0})
+    if m:
+        return m
+    it = await db.items.find_one({**query, "type": "RAW"}, {"_id": 0})
+    return _item_to_raw_material(it) if it else None
+
+async def find_raw_material_by_name(name: str) -> Optional[dict]:
+    """Look up a raw material by exact name (case-insensitive), for Excel sheets that
+    identify ingredients by display name rather than SKU (the batching sheet template)."""
+    if not name:
+        return None
+    m = await db.raw_materials.find_one({"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 0})
+    if m:
+        return m
+    it = await db.items.find_one({"type": "RAW", "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 0})
+    return _item_to_raw_material(it) if it else None
+
+async def consume_raw_material_fifo(
+    item_id: str, unit_of_measure: str, qty_needed: float,
+    reference_type: str, reference_id: str, notes: str, user_id: str
+) -> dict:
+    """Issue qty_needed of a raw material against its oldest available lots first (FIFO),
+    across whichever locations actually hold stock. Used where the source data (e.g. an
+    uploaded Excel sheet) has no lot-selection UI, so the system must pick real lots itself
+    instead of recording consumption against a lot that doesn't exist."""
+    snapshots = await db.stock_snapshots.find(
+        {"item_id": item_id, "item_type": "raw_material", "status": "Available", "quantity_available": {"$gt": 0}},
+        {"_id": 0}
+    ).to_list(1000)
+
+    # Order lots oldest-first using their earliest receive transaction
+    receive_order = {}
+    async for t in db.inventory_transactions.find(
+        {"item_id": item_id, "item_type": "raw_material", "transaction_type": {"$in": ["receive", "adjust"]}},
+        {"_id": 0, "lot_number": 1, "created_at": 1}
+    ).sort("created_at", 1):
+        receive_order.setdefault(t.get("lot_number", ""), t["created_at"])
+    snapshots.sort(key=lambda s: receive_order.get(s.get("lot_number", ""), ""))
+
+    remaining = qty_needed
+    consumed_lots = []
+    for snap in snapshots:
+        if remaining <= 0:
+            break
+        take = min(remaining, snap["quantity_available"])
+        if take <= 0:
+            continue
+        transaction = {
+            "id": generate_id(),
+            "item_id": item_id,
+            "item_type": "raw_material",
+            "lot_number": snap["lot_number"],
+            "location_id": snap["location_id"],
+            "transaction_type": "issue",
+            "quantity": -take,
+            "unit_of_measure": unit_of_measure,
+            "reference_type": reference_type,
+            "reference_id": reference_id,
+            "status": "Available",
+            "notes": notes,
+            "created_at": get_timestamp(),
+            "created_by": user_id
+        }
+        await db.inventory_transactions.insert_one(transaction)
+        await update_stock_snapshot(item_id, "raw_material", snap["lot_number"], snap["location_id"])
+        consumed_lots.append({"lot_number": snap["lot_number"], "location_id": snap["location_id"], "quantity": take, "transaction_id": transaction["id"]})
+        remaining -= take
+
+    return {"consumed_lots": consumed_lots, "quantity_consumed": qty_needed - remaining, "shortfall": max(remaining, 0)}
+
+async def find_packaging_material(id: str = None, sku: str = None) -> Optional[dict]:
+    """Look up a packaging material by id or sku, checking both the legacy
+    packaging_materials collection and the unified items collection."""
+    query = {}
+    if id:
+        query["id"] = id
+    if sku:
+        query["sku"] = sku
+    if not query:
+        return None
+    m = await db.packaging_materials.find_one(query, {"_id": 0})
+    if m:
+        return m
+    it = await db.items.find_one({**query, "type": "PACK"}, {"_id": 0})
+    return _item_to_packaging_material(it) if it else None
+
 @master_router.get("/packaging-materials", response_model=List[PackagingMaterialResponse])
 async def list_packaging_materials():
     materials = await db.packaging_materials.find({}, {"_id": 0}).to_list(1000)
@@ -1468,7 +1565,7 @@ async def consume_materials_for_batch(
     consumed = []
     for c in consumptions:
         # Get material info
-        material = await db.raw_materials.find_one({"id": c.material_id}, {"_id": 0})
+        material = await find_raw_material(id=c.material_id)
         if not material:
             raise HTTPException(status_code=404, detail=f"Material {c.material_id} not found")
         
@@ -1726,7 +1823,7 @@ async def consume_packaging_for_filling(
     if order["status"] != "In Progress":
         raise HTTPException(status_code=400, detail="Filling order must be In Progress")
     
-    material = await db.packaging_materials.find_one({"id": material_id}, {"_id": 0})
+    material = await find_packaging_material(id=material_id)
     if not material:
         raise HTTPException(status_code=404, detail="Packaging material not found")
     
@@ -1873,7 +1970,7 @@ async def calculate_feasibility(product_id: str):
     
     # Check packaging materials availability
     for fc in recipe.get("filling_components", []):
-        material = await db.packaging_materials.find_one({"id": fc["material_id"]}, {"_id": 0})
+        material = await find_packaging_material(id=fc["material_id"])
         if not material:
             continue
         
@@ -2052,7 +2149,7 @@ async def trace_backward(lot_number: str):
             ).to_list(1000)
             
             for rm in rm_consumed:
-                material = await db.raw_materials.find_one({"id": rm["material_id"]}, {"_id": 0})
+                material = await find_raw_material(id=rm["material_id"])
                 raw_materials.append({
                     "material_id": rm["material_id"],
                     "material_name": material.get("name", "Unknown") if material else "Unknown",
@@ -2064,7 +2161,7 @@ async def trace_backward(lot_number: str):
     # Enrich packaging info
     enriched_packaging = []
     for pkg in packaging_consumed:
-        material = await db.packaging_materials.find_one({"id": pkg.get("material_id")}, {"_id": 0})
+        material = await find_packaging_material(id=pkg.get("material_id"))
         enriched_packaging.append({
             **pkg,
             "material_name": material.get("name", "Unknown") if material else "Unknown"
@@ -3390,13 +3487,18 @@ async def create_batching_workspace(
         if formula:
             lines = await db.formula_lines.find({"formula_id": data.formula_id}, {"_id": 0}).to_list(100)
             for line in lines:
-                rm = await db.raw_materials.find_one({"sku": line.get("raw_material_sku")}, {"_id": 0})
+                rm = await find_raw_material(sku=line.get("raw_material_sku"))
+                # Prefer an explicit default_qty_required (what the Formulas UI collects);
+                # only fall back to percent-of-batch scaling when no fixed qty was set.
+                default_qty = line.get("default_qty_required", 0) or 0
+                percent = line.get("percent", 0) or 0
+                planned_qty = default_qty if default_qty > 0 else (percent / 100) * data.planned_qty
                 ingredients.append({
                     "sku": line.get("raw_material_sku"),
                     "name": rm.get("name") if rm else line.get("raw_material_sku"),
                     "phase": line.get("phase", ""),
-                    "percent": line.get("percent", 0),
-                    "planned_qty": (line.get("percent", 0) / 100) * data.planned_qty,
+                    "percent": percent,
+                    "planned_qty": planned_qty,
                     "uom": line.get("uom", "KG"),
                     "notes": line.get("notes", "")
                 })
@@ -3441,6 +3543,7 @@ async def download_batching_sheet(batch_id: str, user: dict = Depends(get_curren
         raise HTTPException(status_code=404, detail="Batching workspace not found")
     
     # Get current inventory snapshot for raw materials
+    locations_by_id = {loc["id"]: loc async for loc in db.locations.find({}, {"_id": 0})}
     inventory_snapshot = []
     stock_cursor = db.stock_snapshots.find(
         {"item_type": "raw_material", "quantity_available": {"$gt": 0}},
@@ -3448,13 +3551,14 @@ async def download_batching_sheet(batch_id: str, user: dict = Depends(get_curren
     )
     async for stock in stock_cursor:
         # Get material info
-        rm = await db.raw_materials.find_one({"id": stock.get("item_id")}, {"_id": 0})
+        rm = await find_raw_material(id=stock.get("item_id"))
         if rm:
+            location = locations_by_id.get(stock.get("location_id"), {})
             inventory_snapshot.append({
                 "sku": rm.get("sku", ""),
                 "name": rm.get("name", ""),
                 "lot_number": stock.get("lot_number", ""),
-                "location": stock.get("location_id", ""),
+                "location": location.get("code") or location.get("name") or stock.get("location_id", ""),
                 "quantity_available": stock.get("quantity_available", 0),
                 "uom": rm.get("unit_of_measure", ""),
                 "status": stock.get("status", ""),
@@ -3463,18 +3567,40 @@ async def download_batching_sheet(batch_id: str, user: dict = Depends(get_curren
     
     # Generate batching sheet
     batch_info = {
-        "batch_id": workspace["id"],
         "batch_code": workspace["batch_code"],
+        "product_name": workspace["formula_name"],
         "formula_name": workspace["formula_name"],
         "planned_qty": workspace["planned_qty"],
         "batch_unit": workspace["batch_unit"],
-        "planned_start": workspace["created_at"],
-        "notes": workspace.get("notes", "")
+        "batch_date": workspace["created_at"][:10] if workspace.get("created_at") else datetime.now(timezone.utc).strftime("%Y-%m-%d")
     }
-    
-    ingredients = workspace.get("ingredients", [])
-    
-    content = ExcelService.generate_batching_template(batch_info, ingredients, inventory_snapshot)
+
+    # Workspace ingredients use sku/name/planned_qty; the template writer expects
+    # ingredient_display_name/default_qty_required (same field names formula_lines use)
+    formula_lines = [
+        {
+            "ingredient_display_name": ing.get("name") or ing.get("sku", ""),
+            "default_qty_required": ing.get("planned_qty", 0),
+            "add_order": "",
+            "process_notes": ing.get("notes", ""),
+            "batch_notes": "",
+            "percent": ing.get("percent", "")
+        }
+        for ing in workspace.get("ingredients", [])
+    ]
+
+    inventory_lookup = [
+        {
+            "name": snap["name"],
+            "sku": snap["sku"],
+            "location": snap["location"],
+            "unit_of_measure": snap["uom"],
+            "quantity_on_hand": snap["quantity_available"]
+        }
+        for snap in inventory_snapshot
+    ]
+
+    content = PrimePotionsExcelService.generate_batching_template(batch_info, formula_lines, inventory_lookup)
     
     return StreamingResponse(
         io.BytesIO(content),
@@ -3494,98 +3620,77 @@ async def upload_batching_sheet(
         raise HTTPException(status_code=404, detail="Batching workspace not found")
     
     content = await file.read()
-    parsed = ExcelService.parse_batching_sheet(content)
-    
-    # Validate
-    if parsed["validation_errors"]:
-        raise HTTPException(status_code=400, detail={"errors": parsed["validation_errors"]})
-    
-    # Get actual batch size
-    actual_batch_size = parsed["batch_header"].get("actual_batch_size")
+    parsed = PrimePotionsExcelService.parse_batching_upload(content)
+
+    if parsed["errors"]:
+        raise HTTPException(status_code=400, detail={"errors": parsed["errors"]})
+
+    # Actual batch size = FINISH WT if the user filled it in, else the sum of actual qty entered per ingredient
+    actual_batch_size = parsed.get("finish_weight") or sum(
+        (ing.get("actual_qty") or 0) for ing in parsed["ingredients"]
+    )
     if not actual_batch_size:
-        raise HTTPException(status_code=400, detail="Missing actual_batch_size in BatchHeader")
-    
-    # Process consumptions
+        raise HTTPException(
+            status_code=400,
+            detail="No quantities found. Fill in the 'Added' column (and/or 'FINISH WT') before uploading."
+        )
+
+    warnings = list(parsed.get("warnings", []))
+
+    # Process consumptions - the sheet identifies ingredients by name (no SKU/lot column exists in the template)
     consumptions_created = []
     transactions_created = []
-    
+
     for ing in parsed["ingredients"]:
-        if not ing.get("actual_qty") or ing.get("actual_qty") <= 0:
+        actual_qty = ing.get("actual_qty")
+        if not actual_qty or actual_qty <= 0:
             continue
-        
-        # Get material
-        rm = await db.raw_materials.find_one({"sku": ing.get("raw_material_sku")}, {"_id": 0})
+
+        ingredient_name = ing.get("ingredient_name", "")
+        rm = await find_raw_material(sku=ingredient_name) or await find_raw_material_by_name(ingredient_name)
         if not rm:
-            parsed["warnings"].append(f"Material not found: {ing.get('raw_material_sku')}")
+            warnings.append(f"Material not found: {ingredient_name}")
             continue
-        
-        lot_code = ing.get("lot_code_used", "")
-        actual_qty = float(ing["actual_qty"])
-        
-        # Create inventory transaction (issue)
-        transaction = {
-            "id": generate_id(),
-            "item_id": rm["id"],
-            "item_type": "raw_material",
-            "lot_number": lot_code,
-            "location_id": workspace["target_location_id"],
-            "transaction_type": "issue",
-            "quantity": -actual_qty,
-            "unit_of_measure": rm.get("unit_of_measure", "KG"),
-            "reference_type": "batching_workspace",
-            "reference_id": batch_id,
-            "status": "Available",
-            "notes": f"Batching consumption for {workspace['batch_code']}",
-            "created_at": get_timestamp(),
-            "created_by": user["id"]
-        }
-        await db.inventory_transactions.insert_one(transaction)
-        transactions_created.append(transaction["id"])
-        
-        # Update stock snapshot
-        await update_stock_snapshot(rm["id"], "raw_material", lot_code, workspace["target_location_id"])
-        
-        # Record consumption
-        consumption = {
-            "id": generate_id(),
-            "batch_id": batch_id,
-            "material_id": rm["id"],
-            "material_sku": ing.get("raw_material_sku"),
-            "lot_number": lot_code,
-            "planned_qty": ing.get("planned_qty", 0),
-            "actual_qty": actual_qty,
-            "variance": actual_qty - float(ing.get("planned_qty", 0)),
-            "created_at": get_timestamp()
-        }
-        await db.batching_consumptions.insert_one(consumption)
-        consumptions_created.append(consumption["id"])
-    
-    # Process lot splits if any
-    for split in parsed.get("lot_splits", []):
-        if not split.get("qty_used") or split.get("qty_used") <= 0:
-            continue
-        
-        rm = await db.raw_materials.find_one({"sku": split.get("raw_material_sku")}, {"_id": 0})
-        if rm:
-            transaction = {
+
+        actual_qty = float(actual_qty)
+
+        # The batching sheet has no lot column (it mirrors Prime Potions' paper form), so
+        # draw from the material's real lots oldest-first rather than inventing a blank lot.
+        result = await consume_raw_material_fifo(
+            item_id=rm["id"],
+            unit_of_measure=rm.get("unit_of_measure", "KG"),
+            qty_needed=actual_qty,
+            reference_type="batching_workspace",
+            reference_id=batch_id,
+            notes=f"Batching consumption for {workspace['batch_code']}",
+            user_id=user["id"]
+        )
+        transactions_created.extend(l["transaction_id"] for l in result["consumed_lots"])
+        if result["shortfall"] > 0:
+            warnings.append(
+                f"{ingredient_name}: only {result['quantity_consumed']:.3f} of {actual_qty:.3f} {rm.get('unit_of_measure', 'KG')} "
+                f"was available in stock - recorded a shortfall of {result['shortfall']:.3f}."
+            )
+
+        # Record consumption (one record per lot actually drawn from)
+        for lot in result["consumed_lots"]:
+            consumption = {
                 "id": generate_id(),
-                "item_id": rm["id"],
-                "item_type": "raw_material",
-                "lot_number": split.get("lot_code", ""),
-                "location_id": workspace["target_location_id"],
-                "transaction_type": "issue",
-                "quantity": -float(split["qty_used"]),
-                "unit_of_measure": rm.get("unit_of_measure", "KG"),
-                "reference_type": "batching_workspace",
-                "reference_id": batch_id,
-                "status": "Available",
-                "notes": f"Lot split for {workspace['batch_code']}",
-                "created_at": get_timestamp(),
-                "created_by": user["id"]
+                "batch_id": batch_id,
+                "material_id": rm["id"],
+                "material_sku": rm.get("sku"),
+                "lot_number": lot["lot_number"],
+                "planned_qty": ing.get("qty_required", 0),
+                "actual_qty": lot["quantity"],
+                "variance": lot["quantity"] - float(ing.get("qty_required", 0) or 0),
+                "created_at": get_timestamp()
             }
-            await db.inventory_transactions.insert_one(transaction)
-            await update_stock_snapshot(rm["id"], "raw_material", split.get("lot_code", ""), workspace["target_location_id"])
-    
+            await db.batching_consumptions.insert_one(consumption)
+            consumptions_created.append(consumption["id"])
+
+    if not consumptions_created and parsed["ingredients"]:
+        warnings.append("No ingredient quantities were recorded - none of the 'Added' column values matched a known material.")
+
     # Create WIP production
     wip_lot_number = await generate_lot_number("WIP")
     
@@ -3644,7 +3749,7 @@ async def upload_batching_sheet(
         "variance_percent": round(variance_percent, 2),
         "consumptions_created": len(consumptions_created),
         "transactions_created": len(transactions_created),
-        "warnings": parsed.get("warnings", [])
+        "warnings": warnings
     }
 
 @batching_router.post("/workspace/{batch_id}/start")

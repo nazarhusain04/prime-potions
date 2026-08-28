@@ -31,9 +31,9 @@ export const ExcelSyncPage = () => {
   const handleDownload = async (type) => {
     try {
       const endpoints = {
-        raw: '/excel/prime-potions/raw-materials',
-        packaging: '/excel/prime-potions/packaging',
-        batching: '/excel/prime-potions/batching-template',
+        raw: '/api/excel/prime-potions/raw-materials',
+        packaging: '/api/excel/prime-potions/packaging',
+        batching: '/api/excel/prime-potions/batching-template',
       };
       
       const filenames = {
@@ -89,8 +89,8 @@ export const ExcelSyncPage = () => {
       formData.append('file', selectedFile);
       
       const endpoints = {
-        raw: '/excel/prime-potions/import-raw-materials',
-        packaging: '/excel/prime-potions/import-packaging',
+        raw: '/api/excel/prime-potions/import-raw-materials',
+        packaging: '/api/excel/prime-potions/import-packaging',
       };
       
       const response = await fetch(
@@ -370,16 +370,25 @@ export const ExcelSyncPage = () => {
           <CardTitle className="text-base">Template Reference</CardTitle>
         </CardHeader>
         <CardContent className="text-sm space-y-3">
+          <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-md text-amber-800 text-xs">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <p>
+              Column headers must match <strong>exactly</strong> — including capitalization, spacing, and line breaks
+              within a header cell (e.g. "INTERNAL LOT #" is on its own line above "(Item code-YYMMDD)"). The safest
+              way to get this right is to click <strong>Export to Excel</strong> above, edit that file, then re-import it —
+              rather than typing headers into a new file by hand.
+            </p>
+          </div>
           <div>
             <p className="font-medium">Raw Materials Sheet: RAW-MASTER INV</p>
             <p className="text-gray-500 text-xs">
-              ITEM CODE | INTERNAL LOT # | Ingredient Name | SUPPLIER LOT # | Tracking key | Opening stock | Inventory on hand | EXPIRY / RETEST Date | VENDOR / MANUFACTURER | INCI NAME | Primary Inv Zone | 2ND Inv Zone | CoA | Container Type | UoM | Notes | Minimum stock | Stock status
+              ITEM CODE | INTERNAL LOT # (Item code-YYMMDD) | Ingredient Name | SUPPLIER LOT # | Tracking key | Opening stock | Inventory on hand | EXPIRY / RETEST Date | VENDOR / MANUFACTURER | INCI NAME | Primary Inv Zone | 2ND Inv Zone | CoA (Yes/No) | Container Type | Column2 | UoM | Notes | Minimum stock | Stock status
             </p>
           </div>
           <div>
             <p className="font-medium">Packaging Sheet: Master inventory-Packaging</p>
             <p className="text-gray-500 text-xs">
-              Item Name | sub category | category | Client | Supplier | Size or Specs | UOM | Opening Stock | On Hand | Active | Storage location | Minimum Stock | Stock Status
+              Item Name | sub category | category | Client | Supplier | Size or Specs | UOM | Opening  Stock (note: two spaces) | On Hand | Active | Storage location | Minimum Stock | Stock Status
             </p>
           </div>
           <div>

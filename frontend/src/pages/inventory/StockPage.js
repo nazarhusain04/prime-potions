@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { inventoryApi, masterApi } from '../../lib/api';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
@@ -28,20 +29,29 @@ import { cn, formatNumber, getStatusColor } from '../../lib/utils';
 export const StockPage = () => {
   const [stock, setStock] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [itemsById, setItemsById] = useState({});
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchParams] = useSearchParams();
+  const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '');
   const [selectedType, setSelectedType] = useState('all');
   const [selectedLocation, setSelectedLocation] = useState('all');
   const { subscribe } = useWebSocket();
 
   const fetchData = async () => {
     try {
-      const [stockRes, locationsRes] = await Promise.all([
+      const [stockRes, locationsRes, rawRes, pkgRes] = await Promise.all([
         inventoryApi.getStock(),
-        masterApi.listLocations()
+        masterApi.listLocations(),
+        masterApi.listRawMaterials(),
+        masterApi.listPackagingMaterials()
       ]);
       setStock(stockRes.data);
       setLocations(locationsRes.data);
+      const idMap = {};
+      [...rawRes.data, ...pkgRes.data].forEach((it) => {
+        idMap[it.id] = it;
+      });
+      setItemsById(idMap);
     } catch (error) {
       toast.error('Failed to load stock data');
     } finally {
@@ -59,9 +69,15 @@ export const StockPage = () => {
   }, [subscribe]);
 
   const getLocationName = (id) => locations.find(l => l.id === id)?.name || 'Unknown';
+  const getItem = (id) => itemsById[id];
 
   const filteredStock = stock.filter(s => {
-    const matchesSearch = s.lot_number.toLowerCase().includes(searchQuery.toLowerCase());
+    const item = getItem(s.item_id);
+    const query = searchQuery.toLowerCase();
+    const matchesSearch = !query ||
+      s.lot_number.toLowerCase().includes(query) ||
+      item?.sku?.toLowerCase().includes(query) ||
+      item?.name?.toLowerCase().includes(query);
     const matchesType = selectedType === 'all' || s.item_type === selectedType;
     const matchesLocation = selectedLocation === 'all' || s.location_id === selectedLocation;
     return matchesSearch && matchesType && matchesLocation;
@@ -86,6 +102,7 @@ export const StockPage = () => {
     <Table>
       <TableHeader>
         <TableRow className="bg-slate-50">
+          <TableHead className="text-xs uppercase">Item</TableHead>
           <TableHead className="text-xs uppercase">Lot Number</TableHead>
           <TableHead className="text-xs uppercase">Location</TableHead>
           <TableHead className="text-xs uppercase text-right">On Hand</TableHead>
@@ -97,24 +114,37 @@ export const StockPage = () => {
       </TableHeader>
       <TableBody>
         {items.length > 0 ? (
-          items.map((item, idx) => (
-            <TableRow key={idx} className="hover:bg-slate-50">
-              <TableCell className="lot-number">{item.lot_number}</TableCell>
-              <TableCell>{getLocationName(item.location_id)}</TableCell>
-              <TableCell className="text-right font-medium">{formatNumber(item.quantity_on_hand, 2)}</TableCell>
-              <TableCell className="text-right text-emerald-600">{formatNumber(item.quantity_available, 2)}</TableCell>
-              <TableCell className="text-right text-amber-600">{formatNumber(item.quantity_reserved, 2)}</TableCell>
-              <TableCell>{item.unit_of_measure}</TableCell>
-              <TableCell>
-                <Badge className={cn("text-xs", getStatusColor(item.status))}>
-                  {item.status}
-                </Badge>
-              </TableCell>
-            </TableRow>
-          ))
+          items.map((stockItem, idx) => {
+            const item = getItem(stockItem.item_id);
+            return (
+              <TableRow key={idx} className="hover:bg-slate-50">
+                <TableCell>
+                  {item ? (
+                    <>
+                      <p className="font-medium text-slate-900">{item.name}</p>
+                      <p className="text-xs text-slate-400">{item.sku}</p>
+                    </>
+                  ) : (
+                    <span className="text-slate-400 text-xs">Unknown item</span>
+                  )}
+                </TableCell>
+                <TableCell className="lot-number">{stockItem.lot_number}</TableCell>
+                <TableCell>{getLocationName(stockItem.location_id)}</TableCell>
+                <TableCell className="text-right font-medium">{formatNumber(stockItem.quantity_on_hand, 2)}</TableCell>
+                <TableCell className="text-right text-emerald-600">{formatNumber(stockItem.quantity_available, 2)}</TableCell>
+                <TableCell className="text-right text-amber-600">{formatNumber(stockItem.quantity_reserved, 2)}</TableCell>
+                <TableCell>{stockItem.unit_of_measure}</TableCell>
+                <TableCell>
+                  <Badge className={cn("text-xs", getStatusColor(stockItem.status))}>
+                    {stockItem.status}
+                  </Badge>
+                </TableCell>
+              </TableRow>
+            );
+          })
         ) : (
           <TableRow>
-            <TableCell colSpan={7} className="text-center py-8">
+            <TableCell colSpan={8} className="text-center py-8">
               <Boxes className="w-8 h-8 text-slate-300 mx-auto mb-2" />
               <p className="text-sm text-slate-500">{emptyMessage}</p>
             </TableCell>
@@ -144,7 +174,7 @@ export const StockPage = () => {
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <Input
-                placeholder="Search by lot number..."
+                placeholder="Search by lot number, item name, or SKU..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-9"

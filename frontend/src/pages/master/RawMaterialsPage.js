@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { masterApi } from '../../lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -30,7 +31,7 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Search, FlaskConical, Loader2 } from 'lucide-react';
+import { Plus, Search, FlaskConical, Loader2, Boxes } from 'lucide-react';
 
 export const RawMaterialsPage = () => {
   const [materials, setMaterials] = useState([]);
@@ -229,6 +230,7 @@ export const RawMaterialsPage = () => {
                 <TableHead className="text-xs uppercase">Unit</TableHead>
                 <TableHead className="text-xs uppercase">Reorder Point</TableHead>
                 <TableHead className="text-xs uppercase">Status</TableHead>
+                <TableHead className="text-xs uppercase">Lots</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -245,11 +247,21 @@ export const RawMaterialsPage = () => {
                         {material.is_active ? 'Active' : 'Inactive'}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      <Link
+                        to={`/inventory/stock?search=${encodeURIComponent(material.sku)}`}
+                        className="inline-flex items-center gap-1.5 text-xs text-[#0F5132] hover:underline"
+                        data-testid={`view-lots-${material.sku}`}
+                      >
+                        <Boxes className="w-3.5 h-3.5" />
+                        View Lots
+                      </Link>
+                    </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8">
+                  <TableCell colSpan={7} className="text-center py-8">
                     <FlaskConical className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No raw materials found</p>
                   </TableCell>
