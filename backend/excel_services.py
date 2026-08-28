@@ -325,7 +325,12 @@ class PrimePotionsExcelService:
         ws_batch.cell(row=2, column=1, value=f"Product: {batch_info.get('product_name', batch_info.get('formula_name', ''))}")
         ws_batch.cell(row=2, column=3, value=f"Target Size: {batch_info.get('planned_qty', '')} {batch_info.get('batch_unit', 'KG')}")
         ws_batch.cell(row=3, column=1, value=f"Date: {batch_info.get('batch_date', datetime.now().strftime('%Y-%m-%d'))}")
-        
+        note_cell = ws_batch.cell(
+            row=3, column=4,
+            value="To add an ingredient not listed below: insert a new row directly above FINISH WT (don't leave a blank row) with the name and the Added quantity."
+        )
+        note_cell.font = Font(italic=True, size=9, color="777777")
+
         # Header row 4 - EXACT columns A-N
         for col_idx, header in enumerate(BATCHING_HEADERS, 1):
             cell = ws_batch.cell(row=4, column=col_idx, value=header)
@@ -445,13 +450,21 @@ class PrimePotionsExcelService:
         if "Product:" in str(product_cell):
             result["batch_info"]["product_name"] = product_cell.replace("Product:", "").strip()
         
-        # Parse ingredients starting from row 5
+        # Parse ingredients starting from row 5. Tolerate a stray blank row (e.g. left over
+        # from inserting a new ingredient row) instead of silently stopping there and
+        # missing everything below it, including FINISH WT.
         row_idx = 5
+        consecutive_blanks = 0
         while True:
             ingredient = ws.cell(row=row_idx, column=1).value
             if not ingredient or str(ingredient).strip() == "":
-                break
-            
+                consecutive_blanks += 1
+                if consecutive_blanks >= 3:
+                    break
+                row_idx += 1
+                continue
+            consecutive_blanks = 0
+
             ingredient_str = str(ingredient).strip()
             
             # Check for FINISH WT row
@@ -550,7 +563,7 @@ class PrimePotionsExcelService:
                     # Store as custom field
                     row_data[f"custom_{header}"] = val
             
-            if has_data and row_data.get("sku") or row_data.get("name"):
+            if has_data and (row_data.get("sku") or row_data.get("name")):
                 result["items"].append(row_data)
         
         return result

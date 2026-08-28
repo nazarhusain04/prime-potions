@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../../components/ui/select';
+import { Combobox } from '../../components/ui/combobox';
 import { toast } from 'sonner';
 import { Package, Loader2, CheckCircle } from 'lucide-react';
 
@@ -130,21 +131,18 @@ export const ReceivePage = () => {
 
               <div className="space-y-2">
                 <Label>Material *</Label>
-                <Select
+                <Combobox
+                  data-testid="receive-material-select"
                   value={formData.item_id}
                   onValueChange={(v) => setFormData({ ...formData, item_id: v })}
-                >
-                  <SelectTrigger data-testid="receive-material-select">
-                    <SelectValue placeholder="Select material" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {materials.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        {m.name} ({m.sku}) - {m.unit_of_measure}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder="Select material"
+                  searchPlaceholder="Search by name or SKU..."
+                  emptyText="No material found."
+                  options={materials.map((m) => ({
+                    value: m.id,
+                    label: `${m.name} (${m.sku}) - ${m.unit_of_measure}`
+                  }))}
+                />
               </div>
 
               <div className="space-y-2">
@@ -162,19 +160,18 @@ export const ReceivePage = () => {
 
               <div className="space-y-2">
                 <Label>Location *</Label>
-                <Select
+                <Combobox
+                  data-testid="receive-location-select"
                   value={formData.location_id}
                   onValueChange={(v) => setFormData({ ...formData, location_id: v })}
-                >
-                  <SelectTrigger data-testid="receive-location-select">
-                    <SelectValue placeholder="Select location" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {locations.map((l) => (
-                      <SelectItem key={l.id} value={l.id}>{l.name} ({l.code})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder="Select location"
+                  searchPlaceholder="Search locations..."
+                  emptyText="No location found."
+                  options={locations.map((l) => ({
+                    value: l.id,
+                    label: `${l.name} (${l.code})`
+                  }))}
+                />
               </div>
 
               <div className="space-y-2">

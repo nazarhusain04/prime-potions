@@ -56,8 +56,8 @@ export const InventoryOverviewPage = () => {
       if (filters.belowMinOnly) params.append('below_min_only', 'true');
 
       const response = await api.get(`/inventory/onhand?${params}`);
-      setItems(response.items || []);
-      setPagination(prev => ({ ...prev, total: response.total || 0 }));
+      setItems(response.data.items || []);
+      setPagination(prev => ({ ...prev, total: response.data.total || 0 }));
     } catch (error) {
       toast.error('Failed to load inventory');
       console.error(error);
@@ -69,7 +69,7 @@ export const InventoryOverviewPage = () => {
   const fetchLowStockAlerts = async () => {
     try {
       const response = await api.get('/inventory/alerts/low-stock');
-      setLowStockAlerts(response.alerts || []);
+      setLowStockAlerts(response.data.alerts || []);
     } catch (error) {
       console.error('Failed to load alerts:', error);
     }
@@ -94,7 +94,7 @@ export const InventoryOverviewPage = () => {
   const handleViewDetail = async (item) => {
     try {
       const response = await api.get(`/inventory/onhand/${item.id}`);
-      setSelectedItem(response);
+      setSelectedItem(response.data);
       setShowDetail(true);
     } catch (error) {
       toast.error('Failed to load item details');

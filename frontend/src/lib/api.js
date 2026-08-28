@@ -20,6 +20,24 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// FastAPI validation errors (422) return `detail` as a list of {type, loc, msg, ...}
+// objects (or occasionally a single such object) instead of a string. Pages generally
+// do `toast.error(error.response?.data?.detail || '...')`, which crashes React if
+// `detail` isn't a string - so normalize it here, once, for every request.
+const stringifyErrorDetail = (detail) => {
+  if (typeof detail === 'string' || detail == null) return detail;
+  const errors = Array.isArray(detail) ? detail : [detail];
+  const messages = errors
+    .map((e) => (e && typeof e === 'object' ? e.msg : null))
+    .filter(Boolean);
+  if (messages.length) return messages.join('; ');
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return 'Request failed';
+  }
+};
+
 // Handle auth errors
 api.interceptors.response.use(
   (response) => response,
@@ -28,6 +46,9 @@ api.interceptors.response.use(
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       window.location.href = '/login';
+    }
+    if (error.response?.data && 'detail' in error.response.data) {
+      error.response.data.detail = stringifyErrorDetail(error.response.data.detail);
     }
     return Promise.reject(error);
   }

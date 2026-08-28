@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
+import { Combobox } from '../components/ui/combobox';
 import { toast } from 'sonner';
 import { 
   Plus, 
@@ -299,19 +300,15 @@ export const BatchingWorkspacePage = () => {
 
                 <div className="space-y-2">
                   <Label>Target Location *</Label>
-                  <Select
+                  <Combobox
+                    data-testid="location-select"
                     value={formData.target_location_id}
                     onValueChange={(v) => setFormData({ ...formData, target_location_id: v })}
-                  >
-                    <SelectTrigger data-testid="location-select">
-                      <SelectValue placeholder="Select location" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {locations.map((l) => (
-                        <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    placeholder="Select location"
+                    searchPlaceholder="Search locations..."
+                    emptyText="No location found."
+                    options={locations.map((l) => ({ value: l.id, label: l.name }))}
+                  />
                 </div>
 
                 <div className="space-y-2">
