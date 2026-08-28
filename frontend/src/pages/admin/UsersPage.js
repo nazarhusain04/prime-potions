@@ -157,10 +157,12 @@ export const UsersPage = () => {
               <Input
                 id="new-user-email"
                 type="email"
+                placeholder="name@primepotions.com"
                 value={newUser.email}
                 onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
                 data-testid="new-user-email-input"
               />
+              <p className="text-xs text-slate-400">Must be a @primepotions.com address</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="new-user-password">Password</Label>
