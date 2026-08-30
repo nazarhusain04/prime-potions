@@ -2144,164 +2144,163 @@ async def get_wip_on_floor():
 
 # ============ TRACEABILITY ROUTES ============
 
+async def _resolve_item_name(item_id: str, item_type: str, lot_number: str = None) -> str:
+    if item_type == "raw_material":
+        item = await find_raw_material(id=item_id)
+        return item["name"] if item else "Unknown"
+    if item_type == "packaging_material":
+        item = await find_packaging_material(id=item_id)
+        return item["name"] if item else "Unknown"
+    if item_type == "wip_batch" and lot_number:
+        ws = await db.batching_workspace.find_one({"wip_lot_number": lot_number}, {"_id": 0})
+        if ws:
+            return f"WIP - {ws.get('formula_name', 'Unknown formula')}"
+    return item_type.replace("_", " ").title()
+
+
+async def _get_lot_info(lot_number: str) -> Optional[dict]:
+    """Resolve what item a lot belongs to and its current on-hand quantity, checking
+    live stock first and falling back to transaction history for depleted lots."""
+    snaps = await db.stock_snapshots.find({"lot_number": lot_number}, {"_id": 0}).to_list(100)
+    if snaps:
+        item_id = snaps[0]["item_id"]
+        item_type = snaps[0]["item_type"]
+        qty = sum(s.get("quantity_on_hand", 0) for s in snaps)
+        uom = snaps[0].get("unit_of_measure", "")
+        status = snaps[0].get("status", "Available")
+    else:
+        txn = await db.inventory_transactions.find_one({"lot_number": lot_number}, {"_id": 0})
+        if not txn:
+            return None
+        item_id = txn["item_id"]
+        item_type = txn["item_type"]
+        qty = 0
+        uom = txn.get("unit_of_measure", "")
+        status = "Depleted"
+
+    return {
+        "lot_number": lot_number,
+        "item_id": item_id,
+        "item_type": item_type,
+        "item_name": await _resolve_item_name(item_id, item_type, lot_number),
+        "quantity_on_hand": qty,
+        "unit_of_measure": uom,
+        "status": status,
+    }
+
+
 @traceability_router.get("/forward/{lot_number}")
 async def trace_forward(lot_number: str):
-    """Trace from raw material lot to finished goods"""
-    # Find batch consumptions for this lot
-    batch_consumptions = await db.batch_consumptions.find(
-        {"lot_number": lot_number}, {"_id": 0}
-    ).to_list(1000)
-    
-    batches = []
-    for bc in batch_consumptions:
-        batch = await db.batch_orders.find_one({"id": bc["batch_order_id"]}, {"_id": 0})
-        if batch:
-            batches.append({
-                "batch_order_id": batch["id"],
-                "batch_number": batch["batch_number"],
-                "wip_lot_number": batch.get("wip_lot_number"),
-                "quantity_consumed": bc["quantity"],
-                "status": batch["status"]
+    """Trace a lot forward: what batch was it consumed into, and (if that batch's
+    WIP lot was later used in a Filling Order) what finished goods resulted."""
+    lot = await _get_lot_info(lot_number)
+    if not lot:
+        raise HTTPException(status_code=404, detail="Lot not found in traceability")
+
+    used_in = []
+    async for c in db.batching_consumptions.find({"lot_number": lot_number}, {"_id": 0}):
+        ws = await db.batching_workspace.find_one({"id": c["batch_id"]}, {"_id": 0})
+        if ws:
+            used_in.append({
+                "batch_code": ws["batch_code"],
+                "formula_name": ws.get("formula_name", ""),
+                "qty_used": c.get("actual_qty", 0),
+                "uom": lot["unit_of_measure"],
+                "created_at": c.get("created_at"),
             })
-    
-    # Find filling orders that used the WIP lots
-    filling_orders = []
-    for b in batches:
-        if b.get("wip_lot_number"):
-            filling_consumptions = await db.filling_consumptions.find(
-                {"lot_number": b["wip_lot_number"], "material_type": "wip_batch"}, {"_id": 0}
-            ).to_list(1000)
-            
-            for fc in filling_consumptions:
-                filling = await db.filling_orders.find_one({"id": fc["filling_order_id"]}, {"_id": 0})
-                if filling:
-                    filling_orders.append({
-                        "filling_order_id": filling["id"],
-                        "filling_number": filling["filling_number"],
-                        "fg_lot_number": filling.get("fg_lot_number"),
-                        "wip_lot_consumed": b["wip_lot_number"],
-                        "status": filling["status"]
-                    })
-    
-    return {
-        "source_lot": lot_number,
-        "batches": batches,
-        "filling_orders": filling_orders
-    }
+
+    # If this lot is itself a WIP lot, see if it was consumed into a Filling Order
+    async for fc in db.filling_consumptions.find({"lot_number": lot_number, "material_type": "wip_batch"}, {"_id": 0}):
+        filling = await db.filling_orders.find_one({"id": fc["filling_order_id"]}, {"_id": 0})
+        if filling:
+            used_in.append({
+                "batch_code": filling.get("filling_number", ""),
+                "formula_name": f"Filling Order (FG lot {filling.get('fg_lot_number', '?')})",
+                "qty_used": fc.get("quantity", 0),
+                "uom": lot["unit_of_measure"],
+                "created_at": filling.get("created_at"),
+            })
+
+    transactions = await db.inventory_transactions.find(
+        {"lot_number": lot_number}, {"_id": 0}
+    ).sort("created_at", -1).to_list(200)
+
+    return {"lot": lot, "used_in": used_in, "transactions": transactions}
+
 
 @traceability_router.get("/backward/{lot_number}")
 async def trace_backward(lot_number: str):
-    """Trace from finished good lot back to raw materials"""
-    # Check if it's a finished good lot
-    filling = await db.filling_orders.find_one({"fg_lot_number": lot_number}, {"_id": 0})
-    
-    if not filling:
-        # Check if it's a WIP lot
-        batch = await db.batch_orders.find_one({"wip_lot_number": lot_number}, {"_id": 0})
-        if batch:
-            raw_materials = await db.batch_consumptions.find(
-                {"batch_order_id": batch["id"]}, {"_id": 0}
-            ).to_list(1000)
-            
-            return {
-                "lot_number": lot_number,
-                "lot_type": "wip_batch",
-                "batch_order": batch,
-                "raw_materials_consumed": raw_materials
-            }
-        
+    """Trace a lot backward to the raw material lots that went into it."""
+    lot = await _get_lot_info(lot_number)
+    if not lot:
         raise HTTPException(status_code=404, detail="Lot not found in traceability")
-    
-    # Get filling consumptions
-    filling_consumptions = await db.filling_consumptions.find(
-        {"filling_order_id": filling["id"]}, {"_id": 0}
-    ).to_list(1000)
-    
-    wip_lots_consumed = [fc for fc in filling_consumptions if fc.get("material_type") == "wip_batch"]
-    packaging_consumed = [fc for fc in filling_consumptions if fc.get("material_type") == "packaging_material"]
-    
-    # Trace WIP lots back to raw materials
-    raw_materials = []
-    for wip in wip_lots_consumed:
-        batch = await db.batch_orders.find_one({"wip_lot_number": wip["lot_number"]}, {"_id": 0})
-        if batch:
-            rm_consumed = await db.batch_consumptions.find(
-                {"batch_order_id": batch["id"]}, {"_id": 0}
-            ).to_list(1000)
-            
-            for rm in rm_consumed:
-                material = await find_raw_material(id=rm["material_id"])
-                raw_materials.append({
-                    "material_id": rm["material_id"],
-                    "material_name": material.get("name", "Unknown") if material else "Unknown",
-                    "lot_number": rm["lot_number"],
-                    "quantity": rm["quantity"],
-                    "via_batch": batch["batch_number"]
-                })
-    
-    # Enrich packaging info
-    enriched_packaging = []
-    for pkg in packaging_consumed:
-        material = await find_packaging_material(id=pkg.get("material_id"))
-        enriched_packaging.append({
-            **pkg,
-            "material_name": material.get("name", "Unknown") if material else "Unknown"
-        })
-    
-    return {
-        "lot_number": lot_number,
-        "lot_type": "finished_good",
-        "filling_order": {
-            "id": filling["id"],
-            "filling_number": filling["filling_number"],
-            "status": filling["status"]
-        },
-        "wip_lots_consumed": wip_lots_consumed,
-        "packaging_consumed": enriched_packaging,
-        "raw_materials": raw_materials
-    }
+
+    source_lots = []
+
+    # Is this lot a WIP lot produced by a batching workspace?
+    ws = await db.batching_workspace.find_one({"wip_lot_number": lot_number}, {"_id": 0})
+    if ws:
+        async for c in db.batching_consumptions.find({"batch_id": ws["id"]}, {"_id": 0}):
+            material = await find_raw_material(id=c.get("material_id"))
+            source_lots.append({
+                "item_name": material["name"] if material else c.get("material_sku", "Unknown"),
+                "lot_number": c.get("lot_number", ""),
+                "qty_used": c.get("actual_qty", 0),
+                "uom": lot["unit_of_measure"],
+            })
+    else:
+        # Is this a finished-good lot from a Filling Order? Trace through its WIP lots.
+        filling = await db.filling_orders.find_one({"fg_lot_number": lot_number}, {"_id": 0})
+        if filling:
+            async for fc in db.filling_consumptions.find({"filling_order_id": filling["id"]}, {"_id": 0}):
+                if fc.get("material_type") == "wip_batch":
+                    sub_ws = await db.batching_workspace.find_one({"wip_lot_number": fc["lot_number"]}, {"_id": 0})
+                    if sub_ws:
+                        async for c in db.batching_consumptions.find({"batch_id": sub_ws["id"]}, {"_id": 0}):
+                            material = await find_raw_material(id=c.get("material_id"))
+                            source_lots.append({
+                                "item_name": material["name"] if material else c.get("material_sku", "Unknown"),
+                                "lot_number": c.get("lot_number", ""),
+                                "qty_used": c.get("actual_qty", 0),
+                                "uom": lot["unit_of_measure"],
+                            })
+                else:
+                    material = await find_packaging_material(id=fc.get("material_id"))
+                    source_lots.append({
+                        "item_name": material["name"] if material else "Unknown packaging",
+                        "lot_number": fc.get("lot_number", ""),
+                        "qty_used": fc.get("quantity", 0),
+                        "uom": lot["unit_of_measure"],
+                    })
+
+    transactions = await db.inventory_transactions.find(
+        {"lot_number": lot_number}, {"_id": 0}
+    ).sort("created_at", -1).to_list(200)
+
+    return {"lot": lot, "source_lots": source_lots, "transactions": transactions}
+
 
 @traceability_router.get("/where-used/{item_id}")
-async def where_used(item_id: str, item_type: str):
-    """Find all batches and filling orders where an item was used"""
-    results = {
-        "item_id": item_id,
-        "item_type": item_type,
-        "used_in_batches": [],
-        "used_in_filling": []
-    }
-    
-    if item_type == "raw_material":
-        consumptions = await db.batch_consumptions.find(
-            {"material_id": item_id}, {"_id": 0}
-        ).to_list(1000)
-        
-        for c in consumptions:
-            batch = await db.batch_orders.find_one({"id": c["batch_order_id"]}, {"_id": 0})
-            if batch:
-                results["used_in_batches"].append({
-                    "batch_number": batch["batch_number"],
-                    "lot_consumed": c["lot_number"],
-                    "quantity": c["quantity"],
-                    "status": batch["status"]
-                })
-    
-    elif item_type == "packaging_material":
-        consumptions = await db.filling_consumptions.find(
-            {"material_id": item_id}, {"_id": 0}
-        ).to_list(1000)
-        
-        for c in consumptions:
-            filling = await db.filling_orders.find_one({"id": c["filling_order_id"]}, {"_id": 0})
-            if filling:
-                results["used_in_filling"].append({
-                    "filling_number": filling["filling_number"],
-                    "lot_consumed": c["lot_number"],
-                    "quantity": c["quantity"],
-                    "status": filling["status"]
-                })
-    
-    return results
+async def where_used(item_id: str, item_type: Optional[str] = None):
+    """Find every batch an item (by id or SKU) was consumed into."""
+    item = (
+        await find_raw_material(id=item_id) or await find_raw_material(sku=item_id)
+        or await find_packaging_material(id=item_id) or await find_packaging_material(sku=item_id)
+    )
+    resolved_id = item["id"] if item else item_id
+
+    batches = []
+    async for c in db.batching_consumptions.find({"material_id": resolved_id}, {"_id": 0}):
+        ws = await db.batching_workspace.find_one({"id": c["batch_id"]}, {"_id": 0})
+        if ws:
+            batches.append({
+                "batch_code": ws["batch_code"],
+                "formula_name": ws.get("formula_name", ""),
+                "status": ws.get("status", ""),
+                "created_at": c.get("created_at"),
+            })
+
+    return {"item_id": resolved_id, "item_name": item["name"] if item else item_id, "batches": batches}
 
 # ============ AUDIT LOG ROUTES ============
 
