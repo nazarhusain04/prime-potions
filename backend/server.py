@@ -1142,7 +1142,7 @@ async def list_inventory_transactions(
     item_type: Optional[str] = None,
     lot_number: Optional[str] = None,
     location_id: Optional[str] = None,
-    limit: int = Query(100, le=1000)
+    limit: int = Query(500, le=10000)
 ):
     query = {}
     if item_id:
@@ -1153,7 +1153,7 @@ async def list_inventory_transactions(
         query["lot_number"] = lot_number
     if location_id:
         query["location_id"] = location_id
-    
+
     transactions = await db.inventory_transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return [InventoryTransactionResponse(**t) for t in transactions]
 
