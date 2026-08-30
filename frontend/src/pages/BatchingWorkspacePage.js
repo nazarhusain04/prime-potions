@@ -279,6 +279,29 @@ export const BatchingWorkspacePage = () => {
                       required
                       data-testid="planned-qty-input"
                     />
+                    {(() => {
+                      const formula = formulas.find(f => f.id === formData.formula_id);
+                      const sizes = [...new Set([
+                        ...(formula?.common_batch_sizes || []),
+                        ...(formula?.default_batch_size ? [formula.default_batch_size] : [])
+                      ])].sort((a, b) => a - b);
+                      return sizes.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {sizes.map((size) => (
+                            <Button
+                              key={size}
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-6 px-2 text-xs"
+                              onClick={() => setFormData({ ...formData, planned_qty: String(size) })}
+                            >
+                              {size} {formula?.batch_unit}
+                            </Button>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
                   </div>
                   <div className="space-y-2">
                     <Label>Unit</Label>

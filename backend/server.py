@@ -3904,6 +3904,7 @@ class FormulaCreate(BaseModel):
     recipe_required: bool = False  # When TRUE, batching must match recipe exactly
     variance_tolerance_percent: float = 2.0  # Allowed variance from default qty
     tags: Optional[List[str]] = []
+    common_batch_sizes: Optional[List[float]] = []  # Quick-pick sizes shown when starting a new batch
 
 class FormulaLineCreate(BaseModel):
     formula_id: str
@@ -3940,6 +3941,7 @@ async def create_formula(data: FormulaCreate, user: dict = Depends(require_roles
         "variance_tolerance_percent": data.variance_tolerance_percent,
         "status": "Active",
         "tags": data.tags or [],
+        "common_batch_sizes": data.common_batch_sizes or [],
         "created_at": get_timestamp(),
         "created_by": user["id"]
     }
@@ -3961,7 +3963,8 @@ async def update_formula(formula_id: str, data: FormulaCreate, user: dict = Depe
             "batch_unit": data.batch_unit,
             "recipe_required": data.recipe_required,
             "variance_tolerance_percent": data.variance_tolerance_percent,
-            "tags": data.tags
+            "tags": data.tags,
+            "common_batch_sizes": data.common_batch_sizes or []
         }},
         return_document=True
     )

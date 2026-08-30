@@ -55,7 +55,8 @@ export const FormulasPage = () => {
     batch_unit: 'KG',
     recipe_required: false,
     variance_tolerance_percent: 2.0,
-    tags: []
+    tags: [],
+    common_batch_sizes: ''
   });
 
   const [lineData, setLineData] = useState({
@@ -103,7 +104,8 @@ export const FormulasPage = () => {
       batch_unit: 'KG',
       recipe_required: false,
       variance_tolerance_percent: 2.0,
-      tags: []
+      tags: [],
+      common_batch_sizes: ''
     });
     setEditMode(false);
   };
@@ -113,11 +115,18 @@ export const FormulasPage = () => {
     setSaving(true);
 
     try {
+      const payload = {
+        ...formData,
+        common_batch_sizes: formData.common_batch_sizes
+          .split(',')
+          .map((s) => parseFloat(s.trim()))
+          .filter((n) => !isNaN(n) && n > 0)
+      };
       if (editMode && selectedFormula) {
-        await api.put(`/formulas/${selectedFormula.id}`, formData);
+        await api.put(`/formulas/${selectedFormula.id}`, payload);
         toast.success('Formula updated');
       } else {
-        await api.post('/formulas', formData);
+        await api.post('/formulas', payload);
         toast.success('Formula created');
       }
       setDialogOpen(false);
@@ -140,7 +149,8 @@ export const FormulasPage = () => {
       batch_unit: formula.batch_unit || 'KG',
       recipe_required: formula.recipe_required || false,
       variance_tolerance_percent: formula.variance_tolerance_percent || 2.0,
-      tags: formula.tags || []
+      tags: formula.tags || [],
+      common_batch_sizes: (formula.common_batch_sizes || []).join(', ')
     });
     setSelectedFormula(formula);
     setEditMode(true);
@@ -166,10 +176,13 @@ export const FormulasPage = () => {
     try {
       // Get the material name if we have a sku
       const material = rawMaterials.find(m => m.sku === lineData.raw_material_sku);
-      
+
+      // Store as percent (not a fixed qty) so this line scales correctly no matter
+      // what batch size a workspace is later created at - same as every other formula.
       await api.post('/formulas/lines', {
         formula_id: selectedFormula.id,
         ...lineData,
+        default_qty_required: 0,
         raw_material_id: material?.id || '',
         ingredient_display_name: lineData.ingredient_display_name || material?.name || lineData.raw_material_sku
       });
@@ -313,6 +326,16 @@ export const FormulasPage = () => {
                 </div>
               </div>
 
+              <div className="space-y-2">
+                <Label>Common Batch Sizes</Label>
+                <Input
+                  value={formData.common_batch_sizes}
+                  onChange={(e) => setFormData({ ...formData, common_batch_sizes: e.target.value })}
+                  placeholder="e.g. 265, 175, 80"
+                />
+                <p className="text-xs text-slate-400">Comma-separated. Shown as quick-pick buttons when starting a new batch.</p>
+              </div>
+
               {/* Recipe Required Toggle - KEY FEATURE */}
               <div className="bg-amber-50 p-4 rounded-lg border border-amber-200">
                 <div className="flex items-center justify-between">
@@ -404,19 +427,25 @@ export const FormulasPage = () => {
                     <TableHead>Display Name (Excel Match)</TableHead>
                     <TableHead>Material SKU</TableHead>
                     <TableHead>Phase</TableHead>
-                    <TableHead>Qty Required</TableHead>
+                    <TableHead>%</TableHead>
+                    <TableHead>Qty @ {selectedFormula?.default_batch_size} {selectedFormula?.batch_unit}</TableHead>
                     <TableHead>UOM</TableHead>
                     <TableHead className="w-10"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {formulaLines.map((line, idx) => (
+                  {formulaLines.map((line, idx) => {
+                    const qty = line.default_qty_required > 0
+                      ? line.default_qty_required
+                      : (line.percent || 0) / 100 * (selectedFormula?.default_batch_size || 0);
+                    return (
                     <TableRow key={line.id}>
                       <TableCell className="text-gray-400">{line.add_order || idx + 1}</TableCell>
                       <TableCell className="font-medium">{line.ingredient_display_name}</TableCell>
                       <TableCell className="font-mono text-xs">{line.raw_material_sku}</TableCell>
                       <TableCell>{line.phase || '-'}</TableCell>
-                      <TableCell>{line.default_qty_required}</TableCell>
+                      <TableCell>{line.percent ? `${line.percent}%` : '-'}</TableCell>
+                      <TableCell>{qty.toFixed(3)}</TableCell>
                       <TableCell>{line.uom}</TableCell>
                       <TableCell>
                         <Button
@@ -428,7 +457,8 @@ export const FormulasPage = () => {
                         </Button>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             ) : (
@@ -472,7 +502,7 @@ export const FormulasPage = () => {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-5 gap-3 mb-3">
+              <div className="grid grid-cols-6 gap-3 mb-3">
                 <div className="space-y-1">
                   <Label className="text-xs">Phase</Label>
                   <Input
@@ -490,12 +520,31 @@ export const FormulasPage = () => {
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs">Qty Required</Label>
+                  <Label className="text-xs">Qty @ {selectedFormula?.default_batch_size} {selectedFormula?.batch_unit}</Label>
                   <Input
                     type="number"
                     step="0.001"
                     value={lineData.default_qty_required}
-                    onChange={(e) => setLineData({ ...lineData, default_qty_required: parseFloat(e.target.value) || 0 })}
+                    onChange={(e) => {
+                      const qty = parseFloat(e.target.value) || 0;
+                      const batchSize = selectedFormula?.default_batch_size || 0;
+                      const percent = batchSize > 0 ? Math.round((qty / batchSize) * 100 * 10000) / 10000 : 0;
+                      setLineData({ ...lineData, default_qty_required: qty, percent });
+                    }}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">%</Label>
+                  <Input
+                    type="number"
+                    step="0.0001"
+                    value={lineData.percent}
+                    onChange={(e) => {
+                      const percent = parseFloat(e.target.value) || 0;
+                      const batchSize = selectedFormula?.default_batch_size || 0;
+                      const qty = Math.round((percent / 100) * batchSize * 1000) / 1000;
+                      setLineData({ ...lineData, percent, default_qty_required: qty });
+                    }}
                   />
                 </div>
                 <div className="space-y-1">
