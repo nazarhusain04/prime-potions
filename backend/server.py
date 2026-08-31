@@ -514,17 +514,36 @@ async def broadcast_update(event_type: str, data: dict):
 
 # ============ AUTH ROUTES ============
 
+MAX_FAILED_LOGIN_ATTEMPTS = 5
+LOGIN_LOCKOUT_MINUTES = 15
+
 @auth_router.post("/login", response_model=TokenResponse)
 async def login(credentials: UserLogin):
     user = await db.users.find_one({"email": credentials.email}, {"_id": 0})
+
+    if user and user.get("locked_until"):
+        locked_until = datetime.fromisoformat(user["locked_until"])
+        if locked_until > datetime.now(timezone.utc):
+            raise HTTPException(status_code=429, detail=f"Too many failed attempts. Try again after {locked_until.strftime('%H:%M UTC')}.")
+
     if not user or not verify_password(credentials.password, user["password_hash"]):
+        if user:
+            attempts = user.get("failed_login_attempts", 0) + 1
+            update = {"failed_login_attempts": attempts}
+            if attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
+                update["locked_until"] = (datetime.now(timezone.utc) + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+                update["failed_login_attempts"] = 0
+            await db.users.update_one({"email": credentials.email}, {"$set": update})
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     if not user.get("is_active", True):
         raise HTTPException(status_code=401, detail="Account disabled")
-    
+
+    if user.get("failed_login_attempts") or user.get("locked_until"):
+        await db.users.update_one({"email": credentials.email}, {"$set": {"failed_login_attempts": 0, "locked_until": None}})
+
     token = create_token(user["id"], user["email"], user["role"])
-    
+
     return TokenResponse(
         access_token=token,
         user=UserResponse(
@@ -675,12 +694,12 @@ async def create_unit(data: UnitOfMeasureCreate, user: dict = Depends(require_ro
     return UnitOfMeasureResponse(**unit)
 
 @master_router.get("/units", response_model=List[UnitOfMeasureResponse])
-async def list_units():
+async def list_units(user: dict = Depends(get_current_user)):
     units = await db.units_of_measure.find({}, {"_id": 0}).to_list(1000)
     return [UnitOfMeasureResponse(**u) for u in units]
 
 @master_router.get("/units/{unit_id}", response_model=UnitOfMeasureResponse)
-async def get_unit(unit_id: str):
+async def get_unit(unit_id: str, user: dict = Depends(get_current_user)):
     u = await db.units_of_measure.find_one({"id": unit_id}, {"_id": 0})
     if not u:
         raise HTTPException(status_code=404, detail="Unit not found")
@@ -711,12 +730,12 @@ async def create_location(data: LocationCreate, user: dict = Depends(require_rol
     return LocationResponse(**location)
 
 @master_router.get("/locations", response_model=List[LocationResponse])
-async def list_locations():
+async def list_locations(user: dict = Depends(get_current_user)):
     locations = await db.locations.find({}, {"_id": 0}).to_list(1000)
     return [LocationResponse(**loc) for loc in locations]
 
 @master_router.get("/locations/{location_id}", response_model=LocationResponse)
-async def get_location(location_id: str):
+async def get_location(location_id: str, user: dict = Depends(get_current_user)):
     loc = await db.locations.find_one({"id": location_id}, {"_id": 0})
     if not loc:
         raise HTTPException(status_code=404, detail="Location not found")
@@ -760,14 +779,14 @@ def _item_to_raw_material(it: dict) -> dict:
     }
 
 @master_router.get("/raw-materials", response_model=List[RawMaterialResponse])
-async def list_raw_materials():
+async def list_raw_materials(user: dict = Depends(get_current_user)):
     materials = await db.raw_materials.find({}, {"_id": 0}).to_list(1000)
     imported_items = await db.items.find({"type": "RAW"}, {"_id": 0}).to_list(10000)
     materials.extend(_item_to_raw_material(it) for it in imported_items)
     return [RawMaterialResponse(**m) for m in materials]
 
 @master_router.get("/raw-materials/{material_id}", response_model=RawMaterialResponse)
-async def get_raw_material(material_id: str):
+async def get_raw_material(material_id: str, user: dict = Depends(get_current_user)):
     m = await db.raw_materials.find_one({"id": material_id}, {"_id": 0})
     if not m:
         it = await db.items.find_one({"id": material_id, "type": "RAW"}, {"_id": 0})
@@ -930,14 +949,14 @@ async def find_packaging_material(id: str = None, sku: str = None) -> Optional[d
     return _item_to_packaging_material(it) if it else None
 
 @master_router.get("/packaging-materials", response_model=List[PackagingMaterialResponse])
-async def list_packaging_materials():
+async def list_packaging_materials(user: dict = Depends(get_current_user)):
     materials = await db.packaging_materials.find({}, {"_id": 0}).to_list(1000)
     imported_items = await db.items.find({"type": "PACK"}, {"_id": 0}).to_list(10000)
     materials.extend(_item_to_packaging_material(it) for it in imported_items)
     return [PackagingMaterialResponse(**m) for m in materials]
 
 @master_router.get("/packaging-materials/{material_id}", response_model=PackagingMaterialResponse)
-async def get_packaging_material(material_id: str):
+async def get_packaging_material(material_id: str, user: dict = Depends(get_current_user)):
     m = await db.packaging_materials.find_one({"id": material_id}, {"_id": 0})
     if not m:
         it = await db.items.find_one({"id": material_id, "type": "PACK"}, {"_id": 0})
@@ -991,12 +1010,12 @@ async def create_product(data: ProductCreate, user: dict = Depends(require_roles
     return ProductResponse(**product)
 
 @master_router.get("/products", response_model=List[ProductResponse])
-async def list_products():
+async def list_products(user: dict = Depends(get_current_user)):
     products = await db.products.find({}, {"_id": 0}).to_list(1000)
     return [ProductResponse(**p) for p in products]
 
 @master_router.get("/products/{product_id}", response_model=ProductResponse)
-async def get_product(product_id: str):
+async def get_product(product_id: str, user: dict = Depends(get_current_user)):
     p = await db.products.find_one({"id": product_id}, {"_id": 0})
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -1037,7 +1056,7 @@ async def create_recipe(data: RecipeCreate, user: dict = Depends(require_roles([
     return RecipeResponse(**recipe)
 
 @master_router.get("/recipes", response_model=List[RecipeResponse])
-async def list_recipes(product_id: Optional[str] = None):
+async def list_recipes(product_id: Optional[str] = None, user: dict = Depends(get_current_user)):
     query = {}
     if product_id:
         query["product_id"] = product_id
@@ -1045,7 +1064,7 @@ async def list_recipes(product_id: Optional[str] = None):
     return [RecipeResponse(**r) for r in recipes]
 
 @master_router.get("/recipes/{recipe_id}", response_model=RecipeResponse)
-async def get_recipe(recipe_id: str):
+async def get_recipe(recipe_id: str, user: dict = Depends(get_current_user)):
     r = await db.recipes.find_one({"id": recipe_id}, {"_id": 0})
     if not r:
         raise HTTPException(status_code=404, detail="Recipe not found")
@@ -1266,7 +1285,8 @@ async def list_inventory_transactions(
     item_type: Optional[str] = None,
     lot_number: Optional[str] = None,
     location_id: Optional[str] = None,
-    limit: int = Query(500, le=10000)
+    limit: int = Query(500, le=10000),
+    user: dict = Depends(get_current_user)
 ):
     query = {}
     if item_id:
@@ -1322,7 +1342,8 @@ async def get_stock(
     item_type: Optional[str] = None,
     item_id: Optional[str] = None,
     location_id: Optional[str] = None,
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    user: dict = Depends(get_current_user)
 ):
     query = {}
     if item_type:
@@ -1338,7 +1359,7 @@ async def get_stock(
     return [StockSnapshotResponse(**s) for s in snapshots]
 
 @inventory_router.get("/stock/summary")
-async def get_stock_summary():
+async def get_stock_summary(user: dict = Depends(get_current_user)):
     """Get aggregated stock summary by item type"""
     pipeline = [
         {"$group": {
@@ -1764,7 +1785,7 @@ async def create_batch_order(
     return BatchOrderResponse(**batch_order)
 
 @manufacturing_router.get("/batch-orders", response_model=List[BatchOrderResponse])
-async def list_batch_orders(status: Optional[str] = None):
+async def list_batch_orders(status: Optional[str] = None, user: dict = Depends(get_current_user)):
     query = {}
     if status:
         query["status"] = status
@@ -1772,7 +1793,7 @@ async def list_batch_orders(status: Optional[str] = None):
     return [BatchOrderResponse(**o) for o in orders]
 
 @manufacturing_router.get("/batch-orders/{batch_id}", response_model=BatchOrderResponse)
-async def get_batch_order(batch_id: str):
+async def get_batch_order(batch_id: str, user: dict = Depends(get_current_user)):
     order = await db.batch_orders.find_one({"id": batch_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Batch order not found")
@@ -1977,7 +1998,7 @@ async def create_filling_order(
     return FillingOrderResponse(**filling_order)
 
 @manufacturing_router.get("/filling-orders", response_model=List[FillingOrderResponse])
-async def list_filling_orders(status: Optional[str] = None):
+async def list_filling_orders(status: Optional[str] = None, user: dict = Depends(get_current_user)):
     query = {}
     if status:
         query["status"] = status
@@ -1985,7 +2006,7 @@ async def list_filling_orders(status: Optional[str] = None):
     return [FillingOrderResponse(**o) for o in orders]
 
 @manufacturing_router.get("/filling-orders/{filling_id}", response_model=FillingOrderResponse)
-async def get_filling_order(filling_id: str):
+async def get_filling_order(filling_id: str, user: dict = Depends(get_current_user)):
     order = await db.filling_orders.find_one({"id": filling_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Filling order not found")
@@ -2290,7 +2311,7 @@ async def cancel_filling_order(filling_id: str, user: dict = Depends(require_rol
 OZ_TO_KG = 0.0283495  # standard avoirdupois ounce; used to translate KG-of-formula into finished units
 
 @manufacturing_router.get("/feasibility/{product_id}", response_model=FeasibilityResponse)
-async def calculate_feasibility(product_id: str):
+async def calculate_feasibility(product_id: str, user: dict = Depends(get_current_user)):
     """Calculate max finished, packaged units of a product produceable right now,
     limited by whichever is tighter: raw material stock for its Formula (ingredient
     stage) or packaging material stock for its filling Recipe/BOM (packaging stage).
@@ -2431,7 +2452,7 @@ async def calculate_feasibility(product_id: str):
     )
 
 @manufacturing_router.get("/wip-on-floor")
-async def get_wip_on_floor():
+async def get_wip_on_floor(user: dict = Depends(get_current_user)):
     """Get WIP batches currently on production floor"""
     pipeline = [
         {"$match": {"item_type": "wip_batch", "quantity_on_hand": {"$gt": 0}}},
@@ -2529,7 +2550,7 @@ async def _get_lot_info(lot_number: str) -> Optional[dict]:
 
 
 @traceability_router.get("/forward/{lot_number}")
-async def trace_forward(lot_number: str):
+async def trace_forward(lot_number: str, user: dict = Depends(get_current_user)):
     """Trace a lot forward: what batch was it consumed into, and (if that batch's
     WIP lot was later used in a Filling Order) what finished goods resulted."""
     lot = await _get_lot_info(lot_number)
@@ -2568,7 +2589,7 @@ async def trace_forward(lot_number: str):
 
 
 @traceability_router.get("/backward/{lot_number}")
-async def trace_backward(lot_number: str):
+async def trace_backward(lot_number: str, user: dict = Depends(get_current_user)):
     """Trace a lot backward to the raw material lots that went into it."""
     lot = await _get_lot_info(lot_number)
     if not lot:
@@ -2620,7 +2641,7 @@ async def trace_backward(lot_number: str):
 
 
 @traceability_router.get("/where-used/{item_id}")
-async def where_used(item_id: str, item_type: Optional[str] = None):
+async def where_used(item_id: str, item_type: Optional[str] = None, user: dict = Depends(get_current_user)):
     """Find every batch an item (by id or SKU) was consumed into."""
     item = (
         await find_raw_material(id=item_id) or await find_raw_material(sku=item_id)
