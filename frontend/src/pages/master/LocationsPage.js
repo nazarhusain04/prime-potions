@@ -30,18 +30,25 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, MapPin, Loader2 } from 'lucide-react';
+import { Plus, MapPin, Loader2, Edit } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+
+const emptyFormData = {
+  code: '',
+  name: '',
+  type: 'warehouse'
+};
 
 export const LocationsPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [formData, setFormData] = useState({
-    code: '',
-    name: '',
-    type: 'warehouse'
-  });
+  const [editMode, setEditMode] = useState(false);
+  const [selectedLocation, setSelectedLocation] = useState(null);
+  const [formData, setFormData] = useState(emptyFormData);
 
   const locationTypes = [
     { value: 'warehouse', label: 'Warehouse' },
@@ -70,16 +77,34 @@ export const LocationsPage = () => {
     setSaving(true);
 
     try {
-      await masterApi.createLocation(formData);
-      toast.success('Location created');
+      if (editMode && selectedLocation) {
+        await masterApi.updateLocation(selectedLocation.id, formData);
+        toast.success('Location updated');
+      } else {
+        await masterApi.createLocation(formData);
+        toast.success('Location created');
+      }
       setDialogOpen(false);
-      setFormData({ code: '', name: '', type: 'warehouse' });
+      setFormData(emptyFormData);
+      setEditMode(false);
+      setSelectedLocation(null);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create location');
+      toast.error(error.response?.data?.detail || 'Failed to save location');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleEditLocation = (location) => {
+    setFormData({
+      code: location.code,
+      name: location.name,
+      type: location.type
+    });
+    setSelectedLocation(location);
+    setEditMode(true);
+    setDialogOpen(true);
   };
 
   if (loading) {
@@ -97,17 +122,21 @@ export const LocationsPage = () => {
           <h1 className="text-2xl font-bold text-slate-900">Locations</h1>
           <p className="text-slate-500">Manage warehouse and production locations</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) { setEditMode(false); setSelectedLocation(null); setFormData(emptyFormData); } }}>
           <DialogTrigger asChild>
-            <Button className="btn-primary gap-2" data-testid="add-location-btn">
+            <Button
+              className="btn-primary gap-2"
+              data-testid="add-location-btn"
+              onClick={() => { setEditMode(false); setSelectedLocation(null); setFormData(emptyFormData); }}
+            >
               <Plus className="w-4 h-4" />
               Add Location
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Add Location</DialogTitle>
-              <DialogDescription>Create a new inventory location</DialogDescription>
+              <DialogTitle>{editMode ? 'Edit Location' : 'Add Location'}</DialogTitle>
+              <DialogDescription>{editMode ? 'Update inventory location details' : 'Create a new inventory location'}</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
@@ -174,6 +203,7 @@ export const LocationsPage = () => {
                 <TableHead className="text-xs uppercase">Name</TableHead>
                 <TableHead className="text-xs uppercase">Type</TableHead>
                 <TableHead className="text-xs uppercase">Status</TableHead>
+                <TableHead className="text-xs uppercase">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -188,11 +218,18 @@ export const LocationsPage = () => {
                         {location.is_active ? 'Active' : 'Inactive'}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      {isAdmin && (
+                        <Button size="sm" variant="ghost" onClick={() => handleEditLocation(location)}>
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center py-8">
+                  <TableCell colSpan={5} className="text-center py-8">
                     <MapPin className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No locations found</p>
                   </TableCell>

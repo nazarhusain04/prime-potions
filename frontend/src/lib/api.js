@@ -80,33 +80,40 @@ export const settingsApi = {
 export const masterApi = {
   // Units
   listUnits: () => api.get('/master/units'),
+  getUnit: (id) => api.get(`/master/units/${id}`),
   createUnit: (data) => api.post('/master/units', data),
-  
+  updateUnit: (id, data) => api.put(`/master/units/${id}`, data),
+
   // Locations
   listLocations: () => api.get('/master/locations'),
   getLocation: (id) => api.get(`/master/locations/${id}`),
   createLocation: (data) => api.post('/master/locations', data),
-  
+  updateLocation: (id, data) => api.put(`/master/locations/${id}`, data),
+
   // Raw Materials
   listRawMaterials: () => api.get('/master/raw-materials'),
   getRawMaterial: (id) => api.get(`/master/raw-materials/${id}`),
   createRawMaterial: (data) => api.post('/master/raw-materials', data),
   updateRawMaterial: (id, data) => api.put(`/master/raw-materials/${id}`, data),
-  
+
   // Packaging Materials
   listPackagingMaterials: () => api.get('/master/packaging-materials'),
   getPackagingMaterial: (id) => api.get(`/master/packaging-materials/${id}`),
   createPackagingMaterial: (data) => api.post('/master/packaging-materials', data),
-  
+  updatePackagingMaterial: (id, data) => api.put(`/master/packaging-materials/${id}`, data),
+
   // Products
   listProducts: () => api.get('/master/products'),
   getProduct: (id) => api.get(`/master/products/${id}`),
   createProduct: (data) => api.post('/master/products', data),
+  updateProduct: (id, data) => api.put(`/master/products/${id}`, data),
   
   // Recipes
   listRecipes: (productId) => api.get('/master/recipes', { params: { product_id: productId } }),
   getRecipe: (id) => api.get(`/master/recipes/${id}`),
   createRecipe: (data) => api.post('/master/recipes', data),
+  updateRecipe: (id, data) => api.put(`/master/recipes/${id}`, data),
+  deleteRecipe: (id) => api.delete(`/master/recipes/${id}`),
 };
 
 // Inventory API
@@ -115,6 +122,8 @@ export const inventoryApi = {
   getStockSummary: () => api.get('/inventory/stock/summary'),
   listTransactions: (params) => api.get('/inventory/transactions', { params }),
   createTransaction: (data) => api.post('/inventory/transactions', data),
+  updateTransaction: (id, data) => api.put(`/inventory/transactions/${id}`, data),
+  deleteTransaction: (id) => api.delete(`/inventory/transactions/${id}`),
   receive: (params) => api.post('/inventory/receive', null, { params }),
   transfer: (data) => api.post('/inventory/transfer', data),
 };
@@ -136,10 +145,12 @@ export const manufacturingApi = {
   getFillingOrder: (id) => api.get(`/manufacturing/filling-orders/${id}`),
   createFillingOrder: (data) => api.post('/manufacturing/filling-orders', data),
   startFillingOrder: (id) => api.post(`/manufacturing/filling-orders/${id}/start`),
+  getConsumptionPlan: (id) => api.get(`/manufacturing/filling-orders/${id}/consumption-plan`),
   consumeWip: (id, wipLotNumber, quantity) => api.post(`/manufacturing/filling-orders/${id}/consume-wip`, null, { params: { wip_lot_number: wipLotNumber, quantity } }),
   consumePackaging: (id, materialId, lotNumber, quantity) => api.post(`/manufacturing/filling-orders/${id}/consume-packaging`, null, { params: { material_id: materialId, lot_number: lotNumber, quantity } }),
   completeFillingOrder: (id, actualQuantity) => api.post(`/manufacturing/filling-orders/${id}/complete`, null, { params: { actual_quantity: actualQuantity } }),
   releaseFillingOrder: (id) => api.post(`/manufacturing/filling-orders/${id}/release`),
+  cancelFillingOrder: (id) => api.delete(`/manufacturing/filling-orders/${id}`),
   
   // Feasibility
   getFeasibility: (productId) => api.get(`/manufacturing/feasibility/${productId}`),

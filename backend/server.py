@@ -363,6 +363,7 @@ class FillingOrderResponse(BaseModel):
 class FeasibilityResponse(BaseModel):
     product_id: str
     max_feasible_quantity: float
+    quantity_label: str = "units"
     bottleneck: str
     components: List[dict]
 
@@ -678,6 +679,25 @@ async def list_units():
     units = await db.units_of_measure.find({}, {"_id": 0}).to_list(1000)
     return [UnitOfMeasureResponse(**u) for u in units]
 
+@master_router.get("/units/{unit_id}", response_model=UnitOfMeasureResponse)
+async def get_unit(unit_id: str):
+    u = await db.units_of_measure.find_one({"id": unit_id}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    return UnitOfMeasureResponse(**u)
+
+@master_router.put("/units/{unit_id}", response_model=UnitOfMeasureResponse)
+async def update_unit(unit_id: str, data: UnitOfMeasureCreate, user: dict = Depends(require_roles(["Admin"]))):
+    result = await db.units_of_measure.find_one_and_update(
+        {"id": unit_id},
+        {"$set": data.model_dump()},
+        return_document=True
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    await create_audit_log(user["id"], "update", "unit_of_measure", unit_id, data.model_dump())
+    return UnitOfMeasureResponse(**{k: v for k, v in result.items() if k != "_id"})
+
 # Locations
 @master_router.post("/locations", response_model=LocationResponse)
 async def create_location(data: LocationCreate, user: dict = Depends(require_roles(["Admin", "Warehouse"]))):
@@ -701,6 +721,18 @@ async def get_location(location_id: str):
     if not loc:
         raise HTTPException(status_code=404, detail="Location not found")
     return LocationResponse(**loc)
+
+@master_router.put("/locations/{location_id}", response_model=LocationResponse)
+async def update_location(location_id: str, data: LocationCreate, user: dict = Depends(require_roles(["Admin"]))):
+    result = await db.locations.find_one_and_update(
+        {"id": location_id},
+        {"$set": data.model_dump()},
+        return_document=True
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Location not found")
+    await create_audit_log(user["id"], "update", "location", location_id, data.model_dump())
+    return LocationResponse(**{k: v for k, v in result.items() if k != "_id"})
 
 # Raw Materials
 @master_router.post("/raw-materials", response_model=RawMaterialResponse)
@@ -746,16 +778,35 @@ async def get_raw_material(material_id: str):
     return RawMaterialResponse(**m)
 
 @master_router.put("/raw-materials/{material_id}", response_model=RawMaterialResponse)
-async def update_raw_material(material_id: str, data: RawMaterialCreate, user: dict = Depends(require_roles(["Admin", "Warehouse"]))):
+async def update_raw_material(material_id: str, data: RawMaterialCreate, user: dict = Depends(require_roles(["Admin"]))):
     result = await db.raw_materials.find_one_and_update(
         {"id": material_id},
         {"$set": data.model_dump()},
         return_document=True
     )
+    if result:
+        await create_audit_log(user["id"], "update", "raw_material", material_id, data.model_dump())
+        return RawMaterialResponse(**{k: v for k, v in result.items() if k != "_id"})
+
+    # Most real materials were Excel-imported into the unified `items` collection, not
+    # the legacy `raw_materials` collection - fall back to updating there.
+    item_update = {
+        "sku": data.sku,
+        "name": data.name,
+        "inci_name": data.description or "",
+        "unit_of_measure": data.unit_of_measure,
+        "min_stock_level": data.reorder_point,
+        "category": data.category or "",
+    }
+    result = await db.items.find_one_and_update(
+        {"id": material_id, "type": "RAW"},
+        {"$set": item_update},
+        return_document=True
+    )
     if not result:
         raise HTTPException(status_code=404, detail="Raw material not found")
     await create_audit_log(user["id"], "update", "raw_material", material_id, data.model_dump())
-    return RawMaterialResponse(**{k: v for k, v in result.items() if k != "_id"})
+    return RawMaterialResponse(**_item_to_raw_material(result))
 
 # Packaging Materials
 @master_router.post("/packaging-materials", response_model=PackagingMaterialResponse)
@@ -896,13 +947,44 @@ async def get_packaging_material(material_id: str):
         raise HTTPException(status_code=404, detail="Packaging material not found")
     return PackagingMaterialResponse(**m)
 
+@master_router.put("/packaging-materials/{material_id}", response_model=PackagingMaterialResponse)
+async def update_packaging_material(material_id: str, data: PackagingMaterialCreate, user: dict = Depends(require_roles(["Admin"]))):
+    result = await db.packaging_materials.find_one_and_update(
+        {"id": material_id},
+        {"$set": data.model_dump()},
+        return_document=True
+    )
+    if result:
+        await create_audit_log(user["id"], "update", "packaging_material", material_id, data.model_dump())
+        return PackagingMaterialResponse(**{k: v for k, v in result.items() if k != "_id"})
+
+    # Some packaging materials were Excel-imported into the unified `items` collection -
+    # fall back to updating there.
+    item_update = {
+        "sku": data.sku,
+        "name": data.name,
+        "size_specs": data.description or "",
+        "unit_of_measure": data.unit_of_measure,
+        "min_stock_level": data.reorder_point,
+        "category": data.category or "",
+    }
+    result = await db.items.find_one_and_update(
+        {"id": material_id, "type": "PACK"},
+        {"$set": item_update},
+        return_document=True
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Packaging material not found")
+    await create_audit_log(user["id"], "update", "packaging_material", material_id, data.model_dump())
+    return PackagingMaterialResponse(**_item_to_packaging_material(result))
+
 # Products (Finished Goods)
 @master_router.post("/products", response_model=ProductResponse)
 async def create_product(data: ProductCreate, user: dict = Depends(require_roles(["Admin"]))):
     existing = await db.products.find_one({"sku": data.sku})
     if existing:
         raise HTTPException(status_code=400, detail="SKU already exists")
-    
+
     product = {"id": generate_id(), **data.model_dump(), "is_active": True}
     await db.products.insert_one(product)
     await create_audit_log(user["id"], "create", "product", product["id"], data.model_dump())
@@ -919,6 +1001,18 @@ async def get_product(product_id: str):
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
     return ProductResponse(**p)
+
+@master_router.put("/products/{product_id}", response_model=ProductResponse)
+async def update_product(product_id: str, data: ProductCreate, user: dict = Depends(require_roles(["Admin"]))):
+    result = await db.products.find_one_and_update(
+        {"id": product_id},
+        {"$set": data.model_dump()},
+        return_document=True
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Product not found")
+    await create_audit_log(user["id"], "update", "product", product_id, data.model_dump())
+    return ProductResponse(**{k: v for k, v in result.items() if k != "_id"})
 
 # Recipes / BOM
 @master_router.post("/recipes", response_model=RecipeResponse)
@@ -956,6 +1050,36 @@ async def get_recipe(recipe_id: str):
     if not r:
         raise HTTPException(status_code=404, detail="Recipe not found")
     return RecipeResponse(**r)
+
+@master_router.put("/recipes/{recipe_id}", response_model=RecipeResponse)
+async def update_recipe(recipe_id: str, data: RecipeCreate, user: dict = Depends(require_roles(["Admin"]))):
+    result = await db.recipes.find_one_and_update(
+        {"id": recipe_id},
+        {"$set": {
+            "product_id": data.product_id,
+            "name": data.name,
+            "batch_size": data.batch_size,
+            "batch_unit": data.batch_unit,
+            "ingredients": [i.model_dump() for i in data.ingredients],
+            "filling_components": [c.model_dump() for c in data.filling_components],
+            "batch_yield_loss_percent": data.batch_yield_loss_percent,
+            "filling_yield_loss_percent": data.filling_yield_loss_percent,
+            "version": data.version,
+        }},
+        return_document=True
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    await create_audit_log(user["id"], "update", "recipe", recipe_id, data.model_dump())
+    return RecipeResponse(**{k: v for k, v in result.items() if k != "_id"})
+
+@master_router.delete("/recipes/{recipe_id}")
+async def delete_recipe(recipe_id: str, user: dict = Depends(require_roles(["Admin"]))):
+    result = await db.recipes.delete_one({"id": recipe_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    await create_audit_log(user["id"], "delete", "recipe", recipe_id, {})
+    return {"message": "Recipe deleted"}
 
 # Units of Measure - Expanded UOM support
 DEFAULT_UOMS = [
@@ -1157,20 +1281,59 @@ async def list_inventory_transactions(
     transactions = await db.inventory_transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return [InventoryTransactionResponse(**t) for t in transactions]
 
+class InventoryTransactionEdit(BaseModel):
+    quantity: float  # the human-facing magnitude - sign is reapplied based on the transaction's own type
+    notes: Optional[str] = ""
+
+@inventory_router.put("/transactions/{transaction_id}", response_model=InventoryTransactionResponse)
+async def update_inventory_transaction(transaction_id: str, data: InventoryTransactionEdit, user: dict = Depends(require_roles(["Admin"]))):
+    """Correct a mistaken ledger entry (e.g. a test receiving with a typo'd quantity).
+    Recomputes the affected stock snapshot afterward so real stock stays accurate."""
+    existing = await db.inventory_transactions.find_one({"id": transaction_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    signed_quantity = data.quantity if existing["transaction_type"] in ["receive", "produce", "adjust"] else -abs(data.quantity)
+
+    result = await db.inventory_transactions.find_one_and_update(
+        {"id": transaction_id},
+        {"$set": {"quantity": signed_quantity, "notes": data.notes or ""}},
+        return_document=True
+    )
+    await update_stock_snapshot(existing["item_id"], existing["item_type"], existing["lot_number"], existing["location_id"])
+    await create_audit_log(user["id"], "update", "inventory_transaction", transaction_id, {"quantity": signed_quantity, "notes": data.notes})
+    return InventoryTransactionResponse(**{k: v for k, v in result.items() if k != "_id"})
+
+@inventory_router.delete("/transactions/{transaction_id}")
+async def delete_inventory_transaction(transaction_id: str, user: dict = Depends(require_roles(["Admin"]))):
+    """Remove a mistaken ledger entry entirely (e.g. a test receive with no real reference)
+    and recompute the affected stock snapshot from what's left."""
+    existing = await db.inventory_transactions.find_one({"id": transaction_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    await db.inventory_transactions.delete_one({"id": transaction_id})
+    await update_stock_snapshot(existing["item_id"], existing["item_type"], existing["lot_number"], existing["location_id"])
+    await create_audit_log(user["id"], "delete", "inventory_transaction", transaction_id, {"lot_number": existing["lot_number"], "quantity": existing["quantity"]})
+    return {"message": "Transaction deleted"}
+
 @inventory_router.get("/stock", response_model=List[StockSnapshotResponse])
 async def get_stock(
     item_type: Optional[str] = None,
+    item_id: Optional[str] = None,
     location_id: Optional[str] = None,
     status: Optional[str] = None
 ):
     query = {}
     if item_type:
         query["item_type"] = item_type
+    if item_id:
+        query["item_id"] = item_id
     if location_id:
         query["location_id"] = location_id
     if status:
         query["status"] = status
-    
+
     snapshots = await db.stock_snapshots.find(query, {"_id": 0}).to_list(10000)
     return [StockSnapshotResponse(**s) for s in snapshots]
 
@@ -1842,6 +2005,64 @@ async def start_filling_order(filling_id: str, user: dict = Depends(require_role
     
     return {"message": "Filling order started", "status": "In Progress"}
 
+@manufacturing_router.get("/filling-orders/{filling_id}/consumption-plan")
+async def get_filling_consumption_plan(filling_id: str, user: dict = Depends(get_current_user)):
+    """Suggest WIP and packaging quantities to consume for a filling order, based on the
+    order's Recipe/BOM and the linked Formula's fill weight - plus real current stock for
+    each, so Filling can be recorded against actual inventory instead of guessed numbers."""
+    order = await db.filling_orders.find_one({"id": filling_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Filling order not found")
+
+    recipe = await db.recipes.find_one({"id": order["recipe_id"]}, {"_id": 0})
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found for this filling order")
+
+    planned_qty = order["planned_quantity"]
+
+    # WIP side: parse fill size (e.g. "2oz") from the product to estimate KG of WIP needed
+    product = await db.products.find_one({"id": order["product_id"]}, {"_id": 0})
+    size_match = re.search(r'(\d+(?:\.\d+)?)\s*oz', f"{product.get('name', '') if product else ''} {product.get('sku', '') if product else ''}", re.IGNORECASE)
+    fill_weight_kg = float(size_match.group(1)) * OZ_TO_KG if size_match else None
+
+    wip_lots = await db.stock_snapshots.find({
+        "item_type": "wip_batch",
+        "item_id": order["product_id"],
+        "status": "Available"
+    }, {"_id": 0}).to_list(1000)
+
+    wip = {
+        "lots": [{"lot_number": l["lot_number"], "quantity_available": l.get("quantity_available", 0), "unit_of_measure": l.get("unit_of_measure", "KG")} for l in wip_lots],
+        "suggested_quantity": round(planned_qty * fill_weight_kg, 3) if fill_weight_kg else None,
+        "fill_weight_kg_per_unit": fill_weight_kg,
+    }
+
+    # Packaging side: each BOM line's real current stock, plus a suggested quantity for this order
+    packaging = []
+    for fc in recipe.get("filling_components", []):
+        material = await find_packaging_material(id=fc.get("material_id"))
+        if not material:
+            continue
+        pkg_stock = await db.stock_snapshots.find({
+            "item_type": "packaging_material",
+            "item_id": fc["material_id"],
+            "status": "Available"
+        }, {"_id": 0}).to_list(1000)
+        available = sum(s.get("quantity_available", 0) for s in pkg_stock)
+        qty_per_unit = fc.get("quantity") or 0
+        packaging.append({
+            "material_id": fc["material_id"],
+            "name": material.get("name", "Unknown"),
+            "sku": material.get("sku", ""),
+            "uom": material.get("unit_of_measure", "EA"),
+            "quantity_per_unit": qty_per_unit,
+            "suggested_quantity": round(planned_qty * qty_per_unit, 3),
+            "available": round(available, 3),
+            "lots": [{"lot_number": s["lot_number"], "quantity_available": s.get("quantity_available", 0)} for s in pkg_stock if s.get("quantity_available", 0) > 0],
+        })
+
+    return {"wip": wip, "packaging": packaging}
+
 @manufacturing_router.post("/filling-orders/{filling_id}/consume-wip")
 async def consume_wip_for_filling(
     filling_id: str,
@@ -1857,22 +2078,32 @@ async def consume_wip_for_filling(
     if order["status"] != "In Progress":
         raise HTTPException(status_code=400, detail="Filling order must be In Progress")
     
-    recipe = await db.recipes.find_one({"id": order["recipe_id"]}, {"_id": 0})
-    
+    # Issue against the lot's real location, not the order's target location (that's
+    # where the finished goods end up, not where the WIP currently sits) - otherwise the
+    # transaction lands on a snapshot that doesn't exist and silently vanishes.
+    wip_snapshot = await db.stock_snapshots.find_one({
+        "item_id": order["product_id"],
+        "item_type": "wip_batch",
+        "lot_number": wip_lot_number,
+        "status": "Available"
+    }, {"_id": 0})
+    if not wip_snapshot:
+        raise HTTPException(status_code=404, detail=f"WIP lot {wip_lot_number} not found or not available")
+
     # Create consumption transaction for WIP
     transaction = InventoryTransactionCreate(
         item_id=order["product_id"],
         item_type="wip_batch",
         lot_number=wip_lot_number,
-        location_id=order["target_location_id"],
+        location_id=wip_snapshot["location_id"],
         transaction_type="issue",
         quantity=quantity,
-        unit_of_measure=recipe["batch_unit"],
+        unit_of_measure=wip_snapshot["unit_of_measure"],
         reference_type="filling_order",
         reference_id=filling_id,
         status="Available"
     )
-    
+
     await create_inventory_transaction(transaction, user)
     
     # Record consumption
@@ -1885,7 +2116,8 @@ async def consume_wip_for_filling(
         "created_at": get_timestamp()
     }
     await db.filling_consumptions.insert_one(consumption_record)
-    
+    consumption_record.pop("_id", None)
+
     return {"message": "WIP consumed", "consumption": consumption_record}
 
 @manufacturing_router.post("/filling-orders/{filling_id}/consume-packaging")
@@ -1907,13 +2139,22 @@ async def consume_packaging_for_filling(
     material = await find_packaging_material(id=material_id)
     if not material:
         raise HTTPException(status_code=404, detail="Packaging material not found")
-    
+
+    pkg_snapshot = await db.stock_snapshots.find_one({
+        "item_id": material_id,
+        "item_type": "packaging_material",
+        "lot_number": lot_number,
+        "status": "Available"
+    }, {"_id": 0})
+    if not pkg_snapshot:
+        raise HTTPException(status_code=404, detail=f"Packaging lot {lot_number} not found or not available")
+
     # Create consumption transaction
     transaction = InventoryTransactionCreate(
         item_id=material_id,
         item_type="packaging_material",
         lot_number=lot_number,
-        location_id=order["target_location_id"],
+        location_id=pkg_snapshot["location_id"],
         transaction_type="issue",
         quantity=quantity,
         unit_of_measure=material["unit_of_measure"],
@@ -1921,7 +2162,7 @@ async def consume_packaging_for_filling(
         reference_id=filling_id,
         status="Available"
     )
-    
+
     await create_inventory_transaction(transaction, user)
     
     # Record consumption
@@ -1935,7 +2176,8 @@ async def consume_packaging_for_filling(
         "created_at": get_timestamp()
     }
     await db.filling_consumptions.insert_one(consumption_record)
-    
+    consumption_record.pop("_id", None)
+
     return {"message": "Packaging consumed", "consumption": consumption_record}
 
 @manufacturing_router.post("/filling-orders/{filling_id}/complete")
@@ -1951,9 +2193,13 @@ async def complete_filling_order(
     
     if order["status"] != "In Progress":
         raise HTTPException(status_code=400, detail="Filling order must be In Progress")
-    
+
+    consumption_count = await db.filling_consumptions.count_documents({"filling_order_id": filling_id})
+    if consumption_count == 0:
+        raise HTTPException(status_code=400, detail="Record WIP and packaging consumption before completing - finished goods can't be produced without consuming real inventory")
+
     product = await db.products.find_one({"id": order["product_id"]}, {"_id": 0})
-    
+
     # Create finished goods lot
     fg_lot_number = await generate_lot_number("FG")
     
@@ -2012,81 +2258,174 @@ async def release_filling_order(filling_id: str, user: dict = Depends(require_ro
     await broadcast_update("filling.updated", {"filling_number": order["filling_number"], "status": "Released"})
     return {"message": "Filling order released", "status": "Released"}
 
+@manufacturing_router.delete("/filling-orders/{filling_id}")
+async def cancel_filling_order(filling_id: str, user: dict = Depends(require_roles(["Admin"]))):
+    """Reverse and delete a filling order at any stage: undoes its WIP/packaging consumption
+    and any finished goods it produced by removing the underlying ledger transactions and
+    recomputing real stock from what's left, then deletes the order itself. Use this to
+    correct a mistaken quantity - there's no in-place edit once real inventory has moved."""
+    order = await db.filling_orders.find_one({"id": filling_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Filling order not found")
+
+    txns = await db.inventory_transactions.find(
+        {"reference_type": "filling_order", "reference_id": filling_id}, {"_id": 0}
+    ).to_list(1000)
+
+    affected = {(t["item_id"], t["item_type"], t["lot_number"], t["location_id"]) for t in txns}
+
+    await db.inventory_transactions.delete_many({"reference_type": "filling_order", "reference_id": filling_id})
+    await db.filling_consumptions.delete_many({"filling_order_id": filling_id})
+    await db.filling_orders.delete_one({"id": filling_id})
+
+    for item_id, item_type, lot_number, location_id in affected:
+        await update_stock_snapshot(item_id, item_type, lot_number, location_id)
+
+    await create_audit_log(user["id"], "cancel", "filling_order", filling_id, {"filling_number": order["filling_number"]})
+    await broadcast_update("filling.updated", {"filling_number": order["filling_number"], "status": "Cancelled"})
+
+    return {"message": "Filling order cancelled and reversed", "affected_lots": len(affected)}
+
 # Feasibility Calculator
+OZ_TO_KG = 0.0283495  # standard avoirdupois ounce; used to translate KG-of-formula into finished units
+
 @manufacturing_router.get("/feasibility/{product_id}", response_model=FeasibilityResponse)
 async def calculate_feasibility(product_id: str):
-    """Calculate max feasible quantity for a product based on available WIP and packaging"""
-    recipe = await db.recipes.find_one({"product_id": product_id, "is_active": True}, {"_id": 0})
-    if not recipe:
-        raise HTTPException(status_code=404, detail="No active recipe found for product")
-    
+    """Calculate max finished, packaged units of a product produceable right now,
+    limited by whichever is tighter: raw material stock for its Formula (ingredient
+    stage) or packaging material stock for its filling Recipe/BOM (packaging stage).
+    Falls back to ingredient-only (KG of formula) if the product has no BOM yet."""
+    product = await db.products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    formula = await db.formulas.find_one({"product_ids": product_id, "status": "Active"}, {"_id": 0})
+    if not formula:
+        raise HTTPException(status_code=404, detail="No active formula linked to this product")
+
+    lines = await db.formula_lines.find({"formula_id": formula["id"]}, {"_id": 0}).sort("add_order", 1).to_list(200)
+    if not lines:
+        raise HTTPException(status_code=404, detail="Formula has no ingredient lines")
+
+    batch_size = formula.get("default_batch_size") or 1.0
     components = []
-    bottlenecks = []
-    
-    # Check WIP availability
-    wip_stock = await db.stock_snapshots.find({
-        "item_type": "wip_batch",
-        "item_id": product_id,
-        "status": "Available"
-    }, {"_id": 0}).to_list(1000)
-    
-    total_wip = sum(s.get("quantity_available", 0) for s in wip_stock)
-    
-    # Calculate units possible from WIP (accounting for yield loss)
-    yield_factor = 1 - (recipe["filling_yield_loss_percent"] / 100)
-    units_from_wip = total_wip * yield_factor if total_wip > 0 else 0
-    
-    components.append({
-        "type": "wip_batch",
-        "name": "WIP Batch",
-        "available": total_wip,
-        "required_per_unit": 1,
-        "max_units": units_from_wip
-    })
-    
-    if units_from_wip == 0:
-        bottlenecks.append("No WIP batch available")
-    
-    max_from_packaging = float('inf')
-    
-    # Check packaging materials availability
-    for fc in recipe.get("filling_components", []):
-        material = await find_packaging_material(id=fc["material_id"])
-        if not material:
+    ingredient_bottlenecks = []
+    max_feasible_kg = float('inf')
+
+    for line in lines:
+        qty_required = line.get("default_qty_required") or 0
+        percent = line.get("percent") or 0
+        if qty_required > 0 and batch_size > 0:
+            rate_per_kg = qty_required / batch_size
+        elif percent > 0:
+            rate_per_kg = percent / 100
+        else:
             continue
-        
-        pkg_stock = await db.stock_snapshots.find({
-            "item_type": "packaging_material",
-            "item_id": fc["material_id"],
-            "status": "Available"
-        }, {"_id": 0}).to_list(1000)
-        
-        total_pkg = sum(s.get("quantity_available", 0) for s in pkg_stock)
-        required_per_unit = fc["quantity"]
-        max_from_component = total_pkg / required_per_unit if required_per_unit > 0 else 0
-        
+
+        rm = await find_raw_material(sku=line.get("raw_material_sku")) or await find_raw_material_by_name(line.get("ingredient_display_name"))
+        available = 0
+        if rm:
+            stock = await db.stock_snapshots.find({
+                "item_type": "raw_material",
+                "item_id": rm["id"],
+                "status": "Available"
+            }, {"_id": 0}).to_list(1000)
+            available = sum(s.get("quantity_available", 0) for s in stock)
+
+        max_kg_from_line = available / rate_per_kg if rate_per_kg > 0 else 0
+
         components.append({
-            "type": "packaging_material",
-            "id": fc["material_id"],
-            "name": material.get("name", "Unknown"),
-            "available": total_pkg,
-            "required_per_unit": required_per_unit,
-            "max_units": max_from_component
+            "type": "raw_material",
+            "stage": "ingredient",
+            "id": rm["id"] if rm else None,
+            "name": line.get("ingredient_display_name"),
+            "sku": line.get("raw_material_sku"),
+            "available": round(available, 3),
+            "required_per_unit": round(rate_per_kg, 6),
+            "uom": line.get("uom", "KG"),
+            "max_units": round(max_kg_from_line, 2)
         })
-        
-        if max_from_component < max_from_packaging:
-            max_from_packaging = max_from_component
-            if max_from_component == 0:
-                bottlenecks.append(f"No {material.get('name', 'Unknown')} available")
-    
-    max_feasible = min(units_from_wip, max_from_packaging) if max_from_packaging != float('inf') else units_from_wip
-    max_feasible = max(0, int(max_feasible))
-    
-    bottleneck = bottlenecks[0] if bottlenecks else ("Packaging shortage" if max_from_packaging < units_from_wip else "WIP shortage" if units_from_wip < max_from_packaging else "Balanced")
-    
+
+        if max_kg_from_line < max_feasible_kg:
+            max_feasible_kg = max_kg_from_line
+        if available <= 0:
+            ingredient_bottlenecks.append(f"No {line.get('ingredient_display_name')} available")
+
+    if max_feasible_kg == float('inf'):
+        max_feasible_kg = 0
+
+    # Translate KG-of-formula into finished units using the fill size parsed from the
+    # product's name/SKU (e.g. "2oz"). Best-effort - falls back to KG-only if unparseable.
+    size_match = re.search(r'(\d+(?:\.\d+)?)\s*oz', f"{product.get('name', '')} {product.get('sku', '')}", re.IGNORECASE)
+    fill_weight_kg = float(size_match.group(1)) * OZ_TO_KG if size_match else None
+    ingredient_max_units = (max_feasible_kg / fill_weight_kg) if fill_weight_kg else None
+
+    # Packaging stage: check the product's filling BOM (Recipe.filling_components), if any
+    recipe = await db.recipes.find_one({"product_id": product_id, "is_active": True}, {"_id": 0})
+    packaging_max_units = None
+    packaging_bottlenecks = []
+    if recipe:
+        for fc in recipe.get("filling_components", []):
+            material = await find_packaging_material(id=fc.get("material_id"))
+            if not material:
+                continue
+            required_per_unit = fc.get("quantity") or 0
+            if required_per_unit <= 0:
+                continue
+            pkg_stock = await db.stock_snapshots.find({
+                "item_type": "packaging_material",
+                "item_id": fc["material_id"],
+                "status": "Available"
+            }, {"_id": 0}).to_list(1000)
+            total_pkg = sum(s.get("quantity_available", 0) for s in pkg_stock)
+            max_from_component = total_pkg / required_per_unit
+
+            components.append({
+                "type": "packaging_material",
+                "stage": "packaging",
+                "id": fc["material_id"],
+                "name": material.get("name", "Unknown"),
+                "available": round(total_pkg, 2),
+                "required_per_unit": round(required_per_unit, 4),
+                "uom": material.get("unit_of_measure", "EA"),
+                "max_units": round(max_from_component, 1)
+            })
+
+            if packaging_max_units is None or max_from_component < packaging_max_units:
+                packaging_max_units = max_from_component
+            if total_pkg <= 0:
+                packaging_bottlenecks.append(f"No {material.get('name', 'Unknown')} available")
+
+    # Combine: finished units are capped by whichever stage is tighter
+    candidates = []
+    if ingredient_max_units is not None:
+        candidates.append(("ingredient", ingredient_max_units, ingredient_bottlenecks))
+    if packaging_max_units is not None:
+        candidates.append(("packaging", packaging_max_units, packaging_bottlenecks))
+
+    quantity_label = "units"
+    if not candidates:
+        # No fill-size or no BOM at all - fall back to reporting KG of formula only
+        max_feasible_units = max_feasible_kg
+        quantity_label = "KG of formula"
+        bottleneck = ingredient_bottlenecks[0] if ingredient_bottlenecks else (
+            "No packaging BOM found - showing raw KG of formula, not finished units" if fill_weight_kg is None
+            else "No filling BOM (Recipe) found for this product yet"
+        )
+    else:
+        limiting_stage, max_feasible_units, stage_bottlenecks = min(candidates, key=lambda c: c[1])
+        max_feasible_units = max(0, max_feasible_units)
+        if stage_bottlenecks:
+            bottleneck = stage_bottlenecks[0]
+        else:
+            stage_components = [c for c in components if c.get("stage") == limiting_stage]
+            limiting = min(stage_components, key=lambda c: c["max_units"]) if stage_components else None
+            bottleneck = f"{limiting['name']} limits output to {limiting['max_units']:.1f} {'KG' if limiting_stage == 'ingredient' else 'units'} ({limiting_stage})" if limiting else f"Limited by {limiting_stage} stage"
+
     return FeasibilityResponse(
         product_id=product_id,
-        max_feasible_quantity=max_feasible,
+        max_feasible_quantity=round(max_feasible_units, 1),
+        quantity_label=quantity_label,
         bottleneck=bottleneck,
         components=components
     )
@@ -3776,11 +4115,15 @@ async def upload_batching_sheet(
     # Create WIP production
     wip_lot_number = await generate_lot_number("WIP")
     
-    # Get product if formula links to one
+    # Get product if formula links to one (a formula can link to several packaged
+    # products - e.g. tube + jar - but the WIP itself is bulk/unpackaged, so it's
+    # tracked under the first linked product as a stand-in until filling/packaging exists)
     product_id = None
     if workspace.get("formula_id"):
         formula = await db.formulas.find_one({"id": workspace["formula_id"]}, {"_id": 0})
-        product_id = formula.get("product_id") if formula else None
+        if formula:
+            product_ids = formula.get("product_ids") or []
+            product_id = product_ids[0] if product_ids else None
     
     wip_transaction = {
         "id": generate_id(),
@@ -3896,7 +4239,7 @@ async def release_batching(batch_id: str, user: dict = Depends(require_roles(["A
 class FormulaCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    product_id: Optional[str] = None
+    product_ids: Optional[List[str]] = []  # A formula can fill into multiple packaged products (e.g. tube + jar)
     category: Optional[str] = ""
     default_batch_size: float = 1.0
     batch_unit: str = "KG"
@@ -3932,7 +4275,7 @@ async def create_formula(data: FormulaCreate, user: dict = Depends(require_roles
         "id": generate_id(),
         "name": data.name,
         "description": data.description or "",
-        "product_id": data.product_id,
+        "product_ids": data.product_ids or [],
         "category": data.category or "",
         "default_batch_size": data.default_batch_size,
         "batch_unit": data.batch_unit,
@@ -3956,7 +4299,7 @@ async def update_formula(formula_id: str, data: FormulaCreate, user: dict = Depe
         {"$set": {
             "name": data.name,
             "description": data.description,
-            "product_id": data.product_id,
+            "product_ids": data.product_ids or [],
             "category": data.category,
             "default_batch_size": data.default_batch_size,
             "batch_unit": data.batch_unit,
@@ -4006,7 +4349,7 @@ async def add_formula_line(data: FormulaLineCreate, user: dict = Depends(require
     return line
 
 @formulas_router.put("/lines/{line_id}")
-async def update_formula_line(line_id: str, data: FormulaLineCreate, user: dict = Depends(require_roles(["Admin", "Production"]))):
+async def update_formula_line(line_id: str, data: FormulaLineCreate, user: dict = Depends(require_roles(["Admin"]))):
     """Update a formula line"""
     result = await db.formula_lines.find_one_and_update(
         {"id": line_id},

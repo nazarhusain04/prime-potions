@@ -5,6 +5,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { Switch } from '../components/ui/switch';
+import { Checkbox } from '../components/ui/checkbox';
 import {
   Table,
   TableBody,
@@ -33,8 +34,11 @@ import { toast } from 'sonner';
 import { Plus, ClipboardList, Loader2, Lock, Unlock, Edit, Trash2 } from 'lucide-react';
 import api from '../lib/api';
 import { formatDate } from '../lib/utils';
+import { useAuth } from '../contexts/AuthContext';
 
 export const FormulasPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [formulas, setFormulas] = useState([]);
   const [products, setProducts] = useState([]);
   const [rawMaterials, setRawMaterials] = useState([]);
@@ -49,7 +53,7 @@ export const FormulasPage = () => {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    product_id: '',
+    product_ids: [],
     category: '',
     default_batch_size: 1,
     batch_unit: 'KG',
@@ -98,7 +102,7 @@ export const FormulasPage = () => {
     setFormData({
       name: '',
       description: '',
-      product_id: '',
+      product_ids: [],
       category: '',
       default_batch_size: 1,
       batch_unit: 'KG',
@@ -143,7 +147,7 @@ export const FormulasPage = () => {
     setFormData({
       name: formula.name,
       description: formula.description || '',
-      product_id: formula.product_id || '',
+      product_ids: formula.product_ids || (formula.product_id ? [formula.product_id] : []),
       category: formula.category || '',
       default_batch_size: formula.default_batch_size || 1,
       batch_unit: formula.batch_unit || 'KG',
@@ -226,6 +230,16 @@ export const FormulasPage = () => {
   const getProductName = (id) => products.find(p => p.id === id)?.name || '-';
   const getMaterialName = (sku) => rawMaterials.find(m => m.sku === sku)?.name || sku;
 
+  const toggleProductLink = (productId) => {
+    setFormData((prev) => {
+      const current = prev.product_ids || [];
+      const next = current.includes(productId)
+        ? current.filter((id) => id !== productId)
+        : [...current, productId];
+      return { ...prev, product_ids: next };
+    });
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -267,31 +281,34 @@ export const FormulasPage = () => {
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Category</Label>
-                  <Input
-                    value={formData.category}
-                    onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                    placeholder="e.g., Sanitizers"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Linked Product</Label>
-                  <Select
-                    value={formData.product_id || 'none'}
-                    onValueChange={(v) => setFormData({ ...formData, product_id: v === 'none' ? '' : v })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select product" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No product link</SelectItem>
-                      {products.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              <div className="space-y-2">
+                <Label>Category</Label>
+                <Input
+                  value={formData.category}
+                  onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                  placeholder="e.g., Sanitizers"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Linked Products</Label>
+                <p className="text-xs text-gray-500">
+                  Check every packaged product this batch can be filled into (e.g. the same base filled as a tube and a jar).
+                </p>
+                <div className="border rounded-md p-3 max-h-40 overflow-y-auto space-y-2">
+                  {products.length > 0 ? (
+                    products.map((p) => (
+                      <label key={p.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <Checkbox
+                          checked={(formData.product_ids || []).includes(p.id)}
+                          onCheckedChange={() => toggleProductLink(p.id)}
+                        />
+                        {p.name} <span className="text-gray-400">({p.sku})</span>
+                      </label>
+                    ))
+                  ) : (
+                    <p className="text-xs text-gray-400">No products yet - create one on the Products page first</p>
+                  )}
                 </div>
               </div>
 
@@ -448,13 +465,15 @@ export const FormulasPage = () => {
                       <TableCell>{qty.toFixed(3)}</TableCell>
                       <TableCell>{line.uom}</TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteLine(line.id)}
-                        >
-                          <Trash2 className="w-4 h-4 text-red-400" />
-                        </Button>
+                        {isAdmin && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteLine(line.id)}
+                          >
+                            <Trash2 className="w-4 h-4 text-red-400" />
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                     );
@@ -613,6 +632,7 @@ export const FormulasPage = () => {
               <TableRow className="bg-slate-50">
                 <TableHead>Name</TableHead>
                 <TableHead>Category</TableHead>
+                <TableHead>Linked Products</TableHead>
                 <TableHead>Default Size</TableHead>
                 <TableHead>Recipe Mode</TableHead>
                 <TableHead>Status</TableHead>
@@ -625,6 +645,17 @@ export const FormulasPage = () => {
                   <TableRow key={formula.id} className="hover:bg-slate-50">
                     <TableCell className="font-medium">{formula.name}</TableCell>
                     <TableCell>{formula.category || '-'}</TableCell>
+                    <TableCell>
+                      {(formula.product_ids || []).length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {formula.product_ids.map((pid) => (
+                            <Badge key={pid} variant="outline">{getProductName(pid)}</Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400 text-sm">-</span>
+                      )}
+                    </TableCell>
                     <TableCell>{formula.default_batch_size} {formula.batch_unit}</TableCell>
                     <TableCell>
                       {formula.recipe_required ? (
@@ -653,20 +684,22 @@ export const FormulasPage = () => {
                         >
                           Lines
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => handleEditFormula(formula)}
-                        >
-                          <Edit className="w-4 h-4" />
-                        </Button>
+                        {isAdmin && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleEditFormula(formula)}
+                          >
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8">
+                  <TableCell colSpan={7} className="text-center py-8">
                     <ClipboardList className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No formulas defined yet</p>
                     <p className="text-xs text-slate-400 mt-1">Formulas are optional - you can batch without them</p>

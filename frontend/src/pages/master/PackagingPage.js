@@ -30,23 +30,30 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Search, Package, Loader2 } from 'lucide-react';
+import { Plus, Search, Package, Loader2, Edit } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+
+const emptyFormData = {
+  sku: '',
+  name: '',
+  description: '',
+  unit_of_measure: '',
+  reorder_point: 0,
+  category: ''
+};
 
 export const PackagingPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [materials, setMaterials] = useState([]);
   const [units, setUnits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [formData, setFormData] = useState({
-    sku: '',
-    name: '',
-    description: '',
-    unit_of_measure: '',
-    reorder_point: 0,
-    category: ''
-  });
+  const [editMode, setEditMode] = useState(false);
+  const [selectedMaterial, setSelectedMaterial] = useState(null);
+  const [formData, setFormData] = useState(emptyFormData);
 
   const fetchData = async () => {
     try {
@@ -72,16 +79,37 @@ export const PackagingPage = () => {
     setSaving(true);
 
     try {
-      await masterApi.createPackagingMaterial(formData);
-      toast.success('Packaging material created');
+      if (editMode && selectedMaterial) {
+        await masterApi.updatePackagingMaterial(selectedMaterial.id, formData);
+        toast.success('Packaging material updated');
+      } else {
+        await masterApi.createPackagingMaterial(formData);
+        toast.success('Packaging material created');
+      }
       setDialogOpen(false);
-      setFormData({ sku: '', name: '', description: '', unit_of_measure: '', reorder_point: 0, category: '' });
+      setFormData(emptyFormData);
+      setEditMode(false);
+      setSelectedMaterial(null);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create material');
+      toast.error(error.response?.data?.detail || 'Failed to save material');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleEditMaterial = (material) => {
+    setFormData({
+      sku: material.sku,
+      name: material.name,
+      description: material.description || '',
+      unit_of_measure: material.unit_of_measure,
+      reorder_point: material.reorder_point || 0,
+      category: material.category || ''
+    });
+    setSelectedMaterial(material);
+    setEditMode(true);
+    setDialogOpen(true);
   };
 
   const filteredMaterials = materials.filter(m =>
@@ -104,17 +132,21 @@ export const PackagingPage = () => {
           <h1 className="text-2xl font-bold text-slate-900">Packaging Materials</h1>
           <p className="text-slate-500">Manage packaging material master data</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) { setEditMode(false); setSelectedMaterial(null); setFormData(emptyFormData); } }}>
           <DialogTrigger asChild>
-            <Button className="btn-primary gap-2" data-testid="add-packaging-btn">
+            <Button
+              className="btn-primary gap-2"
+              data-testid="add-packaging-btn"
+              onClick={() => { setEditMode(false); setSelectedMaterial(null); setFormData(emptyFormData); }}
+            >
               <Plus className="w-4 h-4" />
               Add Packaging
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Add Packaging Material</DialogTitle>
-              <DialogDescription>Create a new packaging material</DialogDescription>
+              <DialogTitle>{editMode ? 'Edit Packaging Material' : 'Add Packaging Material'}</DialogTitle>
+              <DialogDescription>{editMode ? 'Update packaging material details' : 'Create a new packaging material'}</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -229,6 +261,7 @@ export const PackagingPage = () => {
                 <TableHead className="text-xs uppercase">Unit</TableHead>
                 <TableHead className="text-xs uppercase">Reorder Point</TableHead>
                 <TableHead className="text-xs uppercase">Status</TableHead>
+                <TableHead className="text-xs uppercase">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -245,11 +278,18 @@ export const PackagingPage = () => {
                         {material.is_active ? 'Active' : 'Inactive'}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      {isAdmin && (
+                        <Button size="sm" variant="ghost" onClick={() => handleEditMaterial(material)}>
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8">
+                  <TableCell colSpan={7} className="text-center py-8">
                     <Package className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No packaging materials found</p>
                   </TableCell>

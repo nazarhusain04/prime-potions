@@ -171,9 +171,10 @@ export const TraceabilityPage = () => {
         : `/traceability/backward/${encodeURIComponent(lotNumber.trim())}`;
       
       const response = await api.get(endpoint);
-      setTraceResult(response);
-      
-      if (!response || (Array.isArray(response) && response.length === 0)) {
+      const data = response.data;
+      setTraceResult(data);
+
+      if (!data || (Array.isArray(data) && data.length === 0)) {
         toast.info('No traceability data found for this lot');
       }
     } catch (error) {
@@ -194,9 +195,10 @@ export const TraceabilityPage = () => {
 
     try {
       const response = await api.get(`/traceability/where-used/${encodeURIComponent(itemId.trim())}`);
-      setWhereUsedResult(response);
-      
-      if (!response || (Array.isArray(response) && response.length === 0)) {
+      const data = response.data;
+      setWhereUsedResult(data);
+
+      if (!data || (Array.isArray(data) && data.length === 0)) {
         toast.info('No usage data found for this item');
       }
     } catch (error) {

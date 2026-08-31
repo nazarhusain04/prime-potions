@@ -30,20 +30,27 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Ruler, Loader2 } from 'lucide-react';
+import { Plus, Ruler, Loader2, Edit } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+
+const emptyFormData = {
+  code: '',
+  name: '',
+  category: 'weight',
+  base_unit: '',
+  conversion_factor: 1.0
+};
 
 export const UnitsPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [units, setUnits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [formData, setFormData] = useState({
-    code: '',
-    name: '',
-    category: 'weight',
-    base_unit: '',
-    conversion_factor: 1.0
-  });
+  const [editMode, setEditMode] = useState(false);
+  const [selectedUnit, setSelectedUnit] = useState(null);
+  const [formData, setFormData] = useState(emptyFormData);
 
   const categories = [
     { value: 'weight', label: 'Weight' },
@@ -71,19 +78,37 @@ export const UnitsPage = () => {
     setSaving(true);
 
     try {
-      await masterApi.createUnit({
-        ...formData,
-        base_unit: formData.base_unit || null
-      });
-      toast.success('Unit created');
+      const payload = { ...formData, base_unit: formData.base_unit || null };
+      if (editMode && selectedUnit) {
+        await masterApi.updateUnit(selectedUnit.id, payload);
+        toast.success('Unit updated');
+      } else {
+        await masterApi.createUnit(payload);
+        toast.success('Unit created');
+      }
       setDialogOpen(false);
-      setFormData({ code: '', name: '', category: 'weight', base_unit: '', conversion_factor: 1.0 });
+      setFormData(emptyFormData);
+      setEditMode(false);
+      setSelectedUnit(null);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create unit');
+      toast.error(error.response?.data?.detail || 'Failed to save unit');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleEditUnit = (unit) => {
+    setFormData({
+      code: unit.code,
+      name: unit.name,
+      category: unit.category,
+      base_unit: unit.base_unit || '',
+      conversion_factor: unit.conversion_factor
+    });
+    setSelectedUnit(unit);
+    setEditMode(true);
+    setDialogOpen(true);
   };
 
   if (loading) {
@@ -101,17 +126,21 @@ export const UnitsPage = () => {
           <h1 className="text-2xl font-bold text-slate-900">Units of Measure</h1>
           <p className="text-slate-500">Manage measurement units and conversions</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) { setEditMode(false); setSelectedUnit(null); setFormData(emptyFormData); } }}>
           <DialogTrigger asChild>
-            <Button className="btn-primary gap-2" data-testid="add-unit-btn">
+            <Button
+              className="btn-primary gap-2"
+              data-testid="add-unit-btn"
+              onClick={() => { setEditMode(false); setSelectedUnit(null); setFormData(emptyFormData); }}
+            >
               <Plus className="w-4 h-4" />
               Add Unit
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Add Unit of Measure</DialogTitle>
-              <DialogDescription>Create a new measurement unit</DialogDescription>
+              <DialogTitle>{editMode ? 'Edit Unit of Measure' : 'Add Unit of Measure'}</DialogTitle>
+              <DialogDescription>{editMode ? 'Update measurement unit details' : 'Create a new measurement unit'}</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -211,6 +240,7 @@ export const UnitsPage = () => {
                 <TableHead className="text-xs uppercase">Category</TableHead>
                 <TableHead className="text-xs uppercase">Base Unit</TableHead>
                 <TableHead className="text-xs uppercase">Conversion</TableHead>
+                <TableHead className="text-xs uppercase">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -222,11 +252,18 @@ export const UnitsPage = () => {
                     <TableCell className="capitalize">{unit.category}</TableCell>
                     <TableCell>{unit.base_unit || '-'}</TableCell>
                     <TableCell>{unit.conversion_factor}</TableCell>
+                    <TableCell>
+                      {isAdmin && (
+                        <Button size="sm" variant="ghost" onClick={() => handleEditUnit(unit)}>
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8">
+                  <TableCell colSpan={6} className="text-center py-8">
                     <Ruler className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No units found</p>
                   </TableCell>

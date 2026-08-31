@@ -30,9 +30,24 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Search, ClipboardList, Loader2, Trash2 } from 'lucide-react';
+import { Plus, Search, ClipboardList, Loader2, Trash2, Edit } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+
+const emptyFormData = {
+  product_id: '',
+  name: '',
+  batch_size: 10,
+  batch_unit: 'L',
+  ingredients: [],
+  filling_components: [],
+  batch_yield_loss_percent: 2.0,
+  filling_yield_loss_percent: 1.0,
+  version: '1.0'
+};
 
 export const RecipesPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [recipes, setRecipes] = useState([]);
   const [products, setProducts] = useState([]);
   const [rawMaterials, setRawMaterials] = useState([]);
@@ -42,17 +57,9 @@ export const RecipesPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [formData, setFormData] = useState({
-    product_id: '',
-    name: '',
-    batch_size: 10,
-    batch_unit: 'L',
-    ingredients: [],
-    filling_components: [],
-    batch_yield_loss_percent: 2.0,
-    filling_yield_loss_percent: 1.0,
-    version: '1.0'
-  });
+  const [editMode, setEditMode] = useState(false);
+  const [selectedRecipe, setSelectedRecipe] = useState(null);
+  const [formData, setFormData] = useState(emptyFormData);
 
   const fetchData = async () => {
     try {
@@ -124,25 +131,50 @@ export const RecipesPage = () => {
     setSaving(true);
 
     try {
-      await masterApi.createRecipe(formData);
-      toast.success('Recipe created');
+      if (editMode && selectedRecipe) {
+        await masterApi.updateRecipe(selectedRecipe.id, formData);
+        toast.success('Recipe updated');
+      } else {
+        await masterApi.createRecipe(formData);
+        toast.success('Recipe created');
+      }
       setDialogOpen(false);
-      setFormData({
-        product_id: '',
-        name: '',
-        batch_size: 10,
-        batch_unit: 'L',
-        ingredients: [],
-        filling_components: [],
-        batch_yield_loss_percent: 2.0,
-        filling_yield_loss_percent: 1.0,
-        version: '1.0'
-      });
+      setFormData(emptyFormData);
+      setEditMode(false);
+      setSelectedRecipe(null);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create recipe');
+      toast.error(error.response?.data?.detail || 'Failed to save recipe');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleEditRecipe = (recipe) => {
+    setFormData({
+      product_id: recipe.product_id,
+      name: recipe.name,
+      batch_size: recipe.batch_size,
+      batch_unit: recipe.batch_unit,
+      ingredients: recipe.ingredients || [],
+      filling_components: recipe.filling_components || [],
+      batch_yield_loss_percent: recipe.batch_yield_loss_percent,
+      filling_yield_loss_percent: recipe.filling_yield_loss_percent,
+      version: recipe.version
+    });
+    setSelectedRecipe(recipe);
+    setEditMode(true);
+    setDialogOpen(true);
+  };
+
+  const handleDeleteRecipe = async (recipe) => {
+    if (!confirm(`Delete recipe "${recipe.name}"?`)) return;
+    try {
+      await masterApi.deleteRecipe(recipe.id);
+      toast.success('Recipe deleted');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete recipe');
     }
   };
 
@@ -171,16 +203,20 @@ export const RecipesPage = () => {
           <h1 className="text-2xl font-bold text-slate-900">Recipes / BOM</h1>
           <p className="text-slate-500">Manage batch recipes and filling BOMs</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) { setEditMode(false); setSelectedRecipe(null); setFormData(emptyFormData); } }}>
           <DialogTrigger asChild>
-            <Button className="btn-primary gap-2" data-testid="add-recipe-btn">
+            <Button
+              className="btn-primary gap-2"
+              data-testid="add-recipe-btn"
+              onClick={() => { setEditMode(false); setSelectedRecipe(null); setFormData(emptyFormData); }}
+            >
               <Plus className="w-4 h-4" />
               Add Recipe
             </Button>
           </DialogTrigger>
           <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Create Recipe / BOM</DialogTitle>
+              <DialogTitle>{editMode ? 'Edit Recipe / BOM' : 'Create Recipe / BOM'}</DialogTitle>
               <DialogDescription>Define batch ingredients and filling components</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-6">
@@ -429,6 +465,7 @@ export const RecipesPage = () => {
                 <TableHead className="text-xs uppercase">Ingredients</TableHead>
                 <TableHead className="text-xs uppercase">Packaging</TableHead>
                 <TableHead className="text-xs uppercase">Status</TableHead>
+                <TableHead className="text-xs uppercase">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -446,11 +483,25 @@ export const RecipesPage = () => {
                         {recipe.is_active ? 'Active' : 'Inactive'}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        {isAdmin && (
+                          <>
+                            <Button size="sm" variant="ghost" onClick={() => handleEditRecipe(recipe)}>
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => handleDeleteRecipe(recipe)}>
+                              <Trash2 className="w-4 h-4 text-red-400" />
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8">
+                  <TableCell colSpan={8} className="text-center py-8">
                     <ClipboardList className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No recipes found</p>
                   </TableCell>

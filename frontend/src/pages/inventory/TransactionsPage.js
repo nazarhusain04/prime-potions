@@ -3,6 +3,7 @@ import { inventoryApi, masterApi } from '../../lib/api';
 import { Card, CardContent, CardHeader } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
 import { Badge } from '../../components/ui/badge';
 import {
   Table,
@@ -19,16 +20,32 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../../components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../components/ui/dialog';
 import { toast } from 'sonner';
-import { Search, FileText, RefreshCw } from 'lucide-react';
+import { Search, FileText, RefreshCw, Edit, Trash2, Loader2 } from 'lucide-react';
 import { cn, formatNumber, formatDate } from '../../lib/utils';
+import { useAuth } from '../../contexts/AuthContext';
 
 export const TransactionsPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [transactions, setTransactions] = useState([]);
   const [itemsById, setItemsById] = useState({});
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState('all');
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [selectedTx, setSelectedTx] = useState(null);
+  const [editQuantity, setEditQuantity] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -55,6 +72,44 @@ export const TransactionsPage = () => {
   }, []);
 
   const getItem = (id) => itemsById[id];
+
+  const handleEditTx = (tx) => {
+    setSelectedTx(tx);
+    setEditQuantity(String(Math.abs(tx.quantity)));
+    setEditNotes(tx.notes || '');
+    setEditDialogOpen(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedTx || !editQuantity) return;
+    setSaving(true);
+    try {
+      await inventoryApi.updateTransaction(selectedTx.id, {
+        quantity: parseFloat(editQuantity),
+        notes: editNotes
+      });
+      toast.success('Transaction updated - stock recalculated');
+      setEditDialogOpen(false);
+      setSelectedTx(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update transaction');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteTx = async (tx) => {
+    const item = getItem(tx.item_id);
+    if (!confirm(`Delete this ${tx.transaction_type} transaction for ${item?.name || tx.lot_number} (${formatNumber(Math.abs(tx.quantity), 2)} ${tx.unit_of_measure})? Stock will be recalculated from what's left.`)) return;
+    try {
+      await inventoryApi.deleteTransaction(tx.id);
+      toast.success('Transaction deleted - stock recalculated');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete transaction');
+    }
+  };
 
   const filteredTransactions = transactions.filter(t => {
     const item = getItem(t.item_id);
@@ -131,6 +186,7 @@ export const TransactionsPage = () => {
                 <TableHead className="text-xs uppercase">Unit</TableHead>
                 <TableHead className="text-xs uppercase">Notes</TableHead>
                 <TableHead className="text-xs uppercase">Status</TableHead>
+                <TableHead className="text-xs uppercase">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -178,12 +234,26 @@ export const TransactionsPage = () => {
                         {tx.status}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        {isAdmin && (
+                          <>
+                            <Button size="sm" variant="ghost" onClick={() => handleEditTx(tx)}>
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => handleDeleteTx(tx)}>
+                              <Trash2 className="w-4 h-4 text-red-400" />
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </TableCell>
                   </TableRow>
                   );
                 })
               ) : (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8">
+                  <TableCell colSpan={9} className="text-center py-8">
                     <FileText className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No transactions found</p>
                   </TableCell>
@@ -193,6 +263,44 @@ export const TransactionsPage = () => {
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Transaction</DialogTitle>
+            <DialogDescription>
+              {selectedTx?.transaction_type} of {getItem(selectedTx?.item_id)?.name || selectedTx?.lot_number} - stock will be recalculated from the corrected ledger after saving.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Quantity ({selectedTx?.unit_of_measure})</Label>
+              <Input
+                type="number"
+                value={editQuantity}
+                onChange={(e) => setEditQuantity(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Input
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+                placeholder="Optional notes"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button className="btn-primary" onClick={handleSaveEdit} disabled={saving || !editQuantity}>
+              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

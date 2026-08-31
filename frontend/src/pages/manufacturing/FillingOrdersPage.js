@@ -31,10 +31,13 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, FlaskConical, Loader2, Play, CheckCircle, Shield } from 'lucide-react';
+import { Plus, FlaskConical, Loader2, Play, CheckCircle, Shield, Undo2 } from 'lucide-react';
 import { cn, formatNumber, formatDate, getStatusColor } from '../../lib/utils';
+import { useAuth } from '../../contexts/AuthContext';
 
 export const FillingOrdersPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [orders, setOrders] = useState([]);
   const [products, setProducts] = useState([]);
   const [recipes, setRecipes] = useState([]);
@@ -55,6 +58,10 @@ export const FillingOrdersPage = () => {
   });
 
   const [actualQuantity, setActualQuantity] = useState('');
+  const [planLoading, setPlanLoading] = useState(false);
+  const [wipChoice, setWipChoice] = useState({ lot_number: '', quantity: '' });
+  const [wipLots, setWipLots] = useState([]);
+  const [packagingChoices, setPackagingChoices] = useState([]);
 
   const fetchData = async () => {
     try {
@@ -111,16 +118,63 @@ export const FillingOrdersPage = () => {
     }
   };
 
+  const openFillDialog = async (order) => {
+    setSelectedOrder(order);
+    setActualQuantity(order.planned_quantity.toString());
+    setActionDialogOpen(true);
+    setPlanLoading(true);
+    try {
+      const response = await manufacturingApi.getConsumptionPlan(order.id);
+      const plan = response.data;
+      const firstWipLot = plan.wip.lots[0];
+      setWipLots(plan.wip.lots);
+      setWipChoice({
+        lot_number: firstWipLot?.lot_number || '',
+        quantity: plan.wip.suggested_quantity != null ? String(plan.wip.suggested_quantity) : ''
+      });
+      setPackagingChoices(plan.packaging.map((p) => ({
+        material_id: p.material_id,
+        name: p.name,
+        uom: p.uom,
+        lots: p.lots,
+        available: p.available,
+        lot_number: p.lots[0]?.lot_number || '',
+        quantity: String(p.suggested_quantity)
+      })));
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to load consumption plan');
+    } finally {
+      setPlanLoading(false);
+    }
+  };
+
+  const updatePackagingChoice = (index, field, value) => {
+    const next = [...packagingChoices];
+    next[index] = { ...next[index], [field]: value };
+    setPackagingChoices(next);
+  };
+
   const handleCompleteOrder = async () => {
     if (!selectedOrder || !actualQuantity) return;
     setSaving(true);
 
     try {
+      if (wipChoice.lot_number && parseFloat(wipChoice.quantity) > 0) {
+        await manufacturingApi.consumeWip(selectedOrder.id, wipChoice.lot_number, parseFloat(wipChoice.quantity));
+      }
+      for (const p of packagingChoices) {
+        if (p.lot_number && parseFloat(p.quantity) > 0) {
+          await manufacturingApi.consumePackaging(selectedOrder.id, p.material_id, p.lot_number, parseFloat(p.quantity));
+        }
+      }
       const result = await manufacturingApi.completeFillingOrder(selectedOrder.id, parseFloat(actualQuantity));
       toast.success(`Filling completed! FG Lot: ${result.data.fg_lot_number}`);
       setActionDialogOpen(false);
       setSelectedOrder(null);
       setActualQuantity('');
+      setWipChoice({ lot_number: '', quantity: '' });
+      setWipLots([]);
+      setPackagingChoices([]);
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to complete order');
@@ -136,6 +190,20 @@ export const FillingOrdersPage = () => {
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to release');
+    }
+  };
+
+  const handleCancel = async (order) => {
+    const warning = order.status === 'Released' || order.status === 'Completed'
+      ? `This will reverse ${order.filling_number}: delete its Finished Goods lot and give back the WIP/packaging it consumed. Continue?`
+      : `Cancel ${order.filling_number}? This can't be undone.`;
+    if (!confirm(warning)) return;
+    try {
+      await manufacturingApi.cancelFillingOrder(order.id);
+      toast.success('Filling order cancelled and reversed');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to cancel order');
     }
   };
 
@@ -261,43 +329,118 @@ export const FillingOrdersPage = () => {
         </Dialog>
       </div>
 
-      {/* Complete Order Dialog */}
+      {/* Fill Order Dialog: record real WIP + packaging consumption, then complete */}
       <Dialog open={actionDialogOpen} onOpenChange={setActionDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Complete Filling Order</DialogTitle>
+            <DialogTitle>Fill Order {selectedOrder?.filling_number}</DialogTitle>
             <DialogDescription>
-              Enter the actual units produced for filling {selectedOrder?.filling_number}
+              Record what's actually consumed to produce this batch of finished goods.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Planned Quantity</Label>
-              <p className="text-lg font-semibold">{selectedOrder?.planned_quantity} units</p>
+
+          {planLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
             </div>
-            <div className="space-y-2">
-              <Label>Actual Units Produced *</Label>
-              <Input
-                type="number"
-                value={actualQuantity}
-                onChange={(e) => setActualQuantity(e.target.value)}
-                placeholder="Enter actual units"
-                data-testid="actual-units-input"
-              />
+          ) : (
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <Label>Planned Quantity</Label>
+                <p className="text-lg font-semibold">{selectedOrder?.planned_quantity} units</p>
+              </div>
+
+              <div className="space-y-2 border-t pt-3">
+                <Label className="text-xs uppercase text-slate-500">WIP Lot Consumed</Label>
+                <div className="flex gap-2">
+                  <Select
+                    value={wipChoice.lot_number}
+                    onValueChange={(v) => setWipChoice({ ...wipChoice, lot_number: v })}
+                  >
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder="No WIP lots available" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {wipLots.length === 0 && <SelectItem value="none" disabled>No available WIP lot</SelectItem>}
+                      {wipLots.map((l) => (
+                        <SelectItem key={l.lot_number} value={l.lot_number}>
+                          {l.lot_number} ({formatNumber(l.quantity_available, 2)} {l.unit_of_measure})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    type="number"
+                    className="w-28"
+                    value={wipChoice.quantity}
+                    onChange={(e) => setWipChoice({ ...wipChoice, quantity: e.target.value })}
+                    placeholder="Qty"
+                  />
+                </div>
+                <p className="text-xs text-slate-400">Suggested quantity is estimated from the product's fill size - adjust to the real amount used.</p>
+              </div>
+
+              <div className="space-y-3 border-t pt-3">
+                <Label className="text-xs uppercase text-slate-500">Packaging Consumed</Label>
+                {packagingChoices.length === 0 && (
+                  <p className="text-sm text-slate-400">No packaging BOM found for this recipe.</p>
+                )}
+                {packagingChoices.map((p, idx) => (
+                  <div key={p.material_id} className="space-y-1">
+                    <p className="text-sm font-medium">{p.name} <span className="text-xs text-slate-400">({formatNumber(p.available, 2)} {p.uom} available)</span></p>
+                    <div className="flex gap-2">
+                      <Select
+                        value={p.lot_number}
+                        onValueChange={(v) => updatePackagingChoice(idx, 'lot_number', v)}
+                      >
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="No lot available" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {p.lots.length === 0 && <SelectItem value="none" disabled>No available lot</SelectItem>}
+                          {p.lots.map((l) => (
+                            <SelectItem key={l.lot_number} value={l.lot_number}>
+                              {l.lot_number} ({formatNumber(l.quantity_available, 2)} {p.uom})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        type="number"
+                        className="w-28"
+                        value={p.quantity}
+                        onChange={(e) => updatePackagingChoice(idx, 'quantity', e.target.value)}
+                        placeholder="Qty"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-2 border-t pt-3">
+                <Label>Actual Units Produced *</Label>
+                <Input
+                  type="number"
+                  value={actualQuantity}
+                  onChange={(e) => setActualQuantity(e.target.value)}
+                  placeholder="Enter actual units"
+                  data-testid="actual-units-input"
+                />
+              </div>
             </div>
-          </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setActionDialogOpen(false)}>
               Cancel
             </Button>
-            <Button 
-              className="btn-primary" 
-              onClick={handleCompleteOrder} 
-              disabled={saving || !actualQuantity}
+            <Button
+              className="btn-primary"
+              onClick={handleCompleteOrder}
+              disabled={saving || planLoading || !actualQuantity}
               data-testid="confirm-complete-filling-btn"
             >
               {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              Complete Filling
+              Record &amp; Complete
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -355,17 +498,13 @@ export const FillingOrdersPage = () => {
                           </Button>
                         )}
                         {order.status === 'In Progress' && (
-                          <Button 
-                            size="sm" 
+                          <Button
+                            size="sm"
                             className="btn-primary"
-                            onClick={() => {
-                              setSelectedOrder(order);
-                              setActualQuantity(order.planned_quantity.toString());
-                              setActionDialogOpen(true);
-                            }}
+                            onClick={() => openFillDialog(order)}
                             data-testid={`complete-filling-${order.filling_number}`}
                           >
-                            <CheckCircle className="w-3 h-3 mr-1" /> Complete
+                            <CheckCircle className="w-3 h-3 mr-1" /> Fill Order
                           </Button>
                         )}
                         {order.status === 'Completed' && (
@@ -376,6 +515,17 @@ export const FillingOrdersPage = () => {
                             data-testid={`release-filling-${order.filling_number}`}
                           >
                             <Shield className="w-3 h-3 mr-1" /> Release
+                          </Button>
+                        )}
+                        {isAdmin && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-red-500 hover:text-red-600"
+                            onClick={() => handleCancel(order)}
+                            data-testid={`cancel-filling-${order.filling_number}`}
+                          >
+                            <Undo2 className="w-3 h-3 mr-1" /> Cancel
                           </Button>
                         )}
                       </div>

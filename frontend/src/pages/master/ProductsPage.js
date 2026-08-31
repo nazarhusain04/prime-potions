@@ -30,22 +30,29 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Search, Boxes, Loader2 } from 'lucide-react';
+import { Plus, Search, Boxes, Loader2, Edit } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+
+const emptyFormData = {
+  sku: '',
+  name: '',
+  description: '',
+  unit_of_measure: '',
+  category: ''
+};
 
 export const ProductsPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [products, setProducts] = useState([]);
   const [units, setUnits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [formData, setFormData] = useState({
-    sku: '',
-    name: '',
-    description: '',
-    unit_of_measure: '',
-    category: ''
-  });
+  const [editMode, setEditMode] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [formData, setFormData] = useState(emptyFormData);
 
   const fetchData = async () => {
     try {
@@ -71,16 +78,36 @@ export const ProductsPage = () => {
     setSaving(true);
 
     try {
-      await masterApi.createProduct(formData);
-      toast.success('Product created');
+      if (editMode && selectedProduct) {
+        await masterApi.updateProduct(selectedProduct.id, formData);
+        toast.success('Product updated');
+      } else {
+        await masterApi.createProduct(formData);
+        toast.success('Product created');
+      }
       setDialogOpen(false);
-      setFormData({ sku: '', name: '', description: '', unit_of_measure: '', category: '' });
+      setFormData(emptyFormData);
+      setEditMode(false);
+      setSelectedProduct(null);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create product');
+      toast.error(error.response?.data?.detail || 'Failed to save product');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleEditProduct = (product) => {
+    setFormData({
+      sku: product.sku,
+      name: product.name,
+      description: product.description || '',
+      unit_of_measure: product.unit_of_measure,
+      category: product.category || ''
+    });
+    setSelectedProduct(product);
+    setEditMode(true);
+    setDialogOpen(true);
   };
 
   const filteredProducts = products.filter(p =>
@@ -103,17 +130,21 @@ export const ProductsPage = () => {
           <h1 className="text-2xl font-bold text-slate-900">Products</h1>
           <p className="text-slate-500">Manage finished goods master data</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) { setEditMode(false); setSelectedProduct(null); setFormData(emptyFormData); } }}>
           <DialogTrigger asChild>
-            <Button className="btn-primary gap-2" data-testid="add-product-btn">
+            <Button
+              className="btn-primary gap-2"
+              data-testid="add-product-btn"
+              onClick={() => { setEditMode(false); setSelectedProduct(null); setFormData(emptyFormData); }}
+            >
               <Plus className="w-4 h-4" />
               Add Product
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Add Product</DialogTitle>
-              <DialogDescription>Create a new finished good product</DialogDescription>
+              <DialogTitle>{editMode ? 'Edit Product' : 'Add Product'}</DialogTitle>
+              <DialogDescription>{editMode ? 'Update finished good product details' : 'Create a new finished good product'}</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -215,6 +246,7 @@ export const ProductsPage = () => {
                 <TableHead className="text-xs uppercase">Category</TableHead>
                 <TableHead className="text-xs uppercase">Unit</TableHead>
                 <TableHead className="text-xs uppercase">Status</TableHead>
+                <TableHead className="text-xs uppercase">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -230,11 +262,18 @@ export const ProductsPage = () => {
                         {product.is_active ? 'Active' : 'Inactive'}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      {isAdmin && (
+                        <Button size="sm" variant="ghost" onClick={() => handleEditProduct(product)}>
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8">
+                  <TableCell colSpan={6} className="text-center py-8">
                     <Boxes className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No products found</p>
                   </TableCell>

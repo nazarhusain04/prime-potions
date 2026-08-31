@@ -120,7 +120,6 @@ BATCHING_HEADERS = [
     "ENTER % QTY HERE",         # K
     "",                         # L - BLANK
     "",                         # M - BLANK
-    "Enter individual Quantities, per item from Trevor's sheet below"  # N
 ]
 
 BATCHING_FIELD_MAP = {
@@ -642,7 +641,6 @@ class ExcelTemplateConfig:
             {"key": "percent_qty", "header": "ENTER % QTY HERE", "col": "K", "required": False, "enabled": True},
             {"key": "blank_2", "header": "", "col": "L", "required": False, "enabled": False},
             {"key": "blank_3", "header": "", "col": "M", "required": False, "enabled": False},
-            {"key": "individual_qty", "header": "Enter individual Quantities, per item from Trevor's sheet below", "col": "N", "required": False, "enabled": False}
         ]
     }
     

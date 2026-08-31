@@ -62,7 +62,7 @@ export const FeasibilityPage = () => {
     <div className="space-y-6" data-testid="feasibility-page">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Feasibility Calculator</h1>
-        <p className="text-slate-500">Calculate max producible quantity based on available inventory</p>
+        <p className="text-slate-500">Calculate max finished units producible now, limited by raw material or packaging stock - whichever runs out first</p>
       </div>
 
       <Card className="border-slate-200">
@@ -111,9 +111,9 @@ export const FeasibilityPage = () => {
               <div className="text-center mb-6">
                 <p className="text-sm text-slate-500 mb-2">Maximum Feasible Quantity</p>
                 <p className="text-5xl font-bold text-[#0F5132]" data-testid="max-feasible-qty">
-                  {formatNumber(feasibility.max_feasible_quantity, 0)}
+                  {formatNumber(feasibility.max_feasible_quantity, feasibility.quantity_label === 'units' ? 0 : 2)}
                 </p>
-                <p className="text-sm text-slate-400 mt-1">units</p>
+                <p className="text-sm text-slate-400 mt-1">{feasibility.quantity_label || 'units'}</p>
               </div>
 
               <div className={`flex items-center gap-2 p-3 rounded-md ${
@@ -145,15 +145,18 @@ export const FeasibilityPage = () => {
                   <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-md">
                     <div>
                       <p className="font-medium text-sm">{comp.name}</p>
-                      <p className="text-xs text-slate-500 capitalize">{comp.type.replace('_', ' ')}</p>
+                      <p className="text-xs text-slate-500 capitalize flex items-center gap-1.5">
+                        {comp.type.replace('_', ' ')}
+                        <Badge variant="outline" className="text-[10px] px-1 py-0 h-4">{comp.stage || 'ingredient'}</Badge>
+                      </p>
                     </div>
                     <div className="text-right">
                       <p className="text-sm">
                         <span className="text-slate-500">Available:</span>{' '}
-                        <span className="font-semibold">{formatNumber(comp.available, 2)}</span>
+                        <span className="font-semibold">{formatNumber(comp.available, 2)} {comp.uom}</span>
                       </p>
                       <p className="text-xs text-slate-400">
-                        Max units: {formatNumber(comp.max_units, 0)}
+                        Max output: {formatNumber(comp.max_units, comp.stage === 'packaging' ? 1 : 2)} {comp.stage === 'packaging' ? 'units' : 'KG'}
                       </p>
                     </div>
                   </div>
