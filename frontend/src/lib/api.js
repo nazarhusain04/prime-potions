@@ -174,11 +174,6 @@ export const auditApi = {
   list: (params) => api.get('/audit-logs', { params }),
 };
 
-// Seed API
-export const seedApi = {
-  seed: () => api.post('/seed'),
-};
-
 // WebSocket connection
 export const createWebSocket = (onMessage) => {
   const wsUrl = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
