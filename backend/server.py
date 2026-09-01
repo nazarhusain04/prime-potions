@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, WebSocket, WebSocketDisconnect, Query, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -39,8 +39,19 @@ JWT_EXPIRATION_HOURS = 24
 # Only company email addresses may be granted accounts - set via env if the domain changes.
 ALLOWED_USER_EMAIL_DOMAIN = os.environ.get('ALLOWED_USER_EMAIL_DOMAIN', 'primepotions.com').lower()
 
+# The interactive API docs map every endpoint and field for anyone who loads the URL.
+# That is useful while developing and an unnecessary blueprint of the business on a live
+# system, so they are off unless ENVIRONMENT explicitly says development.
+DEV_MODE = os.environ.get('ENVIRONMENT', 'production').lower() == 'development'
+
 # Create the main app
-app = FastAPI(title="Prime Potions ERP API", redirect_slashes=False)
+app = FastAPI(
+    title="Prime Potions ERP API",
+    redirect_slashes=False,
+    docs_url="/docs" if DEV_MODE else None,
+    redoc_url="/redoc" if DEV_MODE else None,
+    openapi_url="/openapi.json" if DEV_MODE else None,
+)
 
 # Create routers
 api_router = APIRouter(prefix="/api")
@@ -4458,6 +4469,20 @@ api_router.include_router(batching_router)
 api_router.include_router(formulas_router)
 api_router.include_router(search_router)
 app.include_router(api_router)
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Baseline hardening. This service answers with JSON, never framed HTML, so it can
+    afford to deny framing and script sources outright - the docs pages are the one
+    exception, since Swagger loads its own assets."""
+    response = await call_next(request)
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if not request.url.path.startswith(("/docs", "/redoc", "/openapi.json")):
+        response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+    return response
 
 # CORS
 _cors_origins_env = os.environ.get('CORS_ORIGINS', '')
