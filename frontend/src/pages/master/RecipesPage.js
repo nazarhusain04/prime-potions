@@ -33,12 +33,15 @@ import { toast } from 'sonner';
 import { Plus, Search, ClipboardList, Loader2, Trash2, Edit } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
+// Batch size is always fixed at "1 EA" - every filling component quantity is
+// interpreted as "how much per one finished unit," matching how Feasibility and
+// Filling Orders read this data. Ingredients aren't tracked here at all - that's
+// what Formulas are for; this page is packaging-only.
 const emptyFormData = {
   product_id: '',
   name: '',
-  batch_size: 10,
-  batch_unit: 'L',
-  ingredients: [],
+  batch_size: 1,
+  batch_unit: 'EA',
   filling_components: [],
   batch_yield_loss_percent: 2.0,
   filling_yield_loss_percent: 1.0,
@@ -86,26 +89,6 @@ export const RecipesPage = () => {
     fetchData();
   }, []);
 
-  const addIngredient = () => {
-    setFormData({
-      ...formData,
-      ingredients: [...formData.ingredients, { material_id: '', material_type: 'raw_material', quantity: 0, unit_of_measure: '' }]
-    });
-  };
-
-  const removeIngredient = (index) => {
-    setFormData({
-      ...formData,
-      ingredients: formData.ingredients.filter((_, i) => i !== index)
-    });
-  };
-
-  const updateIngredient = (index, field, value) => {
-    const newIngredients = [...formData.ingredients];
-    newIngredients[index][field] = value;
-    setFormData({ ...formData, ingredients: newIngredients });
-  };
-
   const addFillingComponent = () => {
     setFormData({
       ...formData,
@@ -130,12 +113,14 @@ export const RecipesPage = () => {
     e.preventDefault();
     setSaving(true);
 
+    const payload = { ...formData, ingredients: [] };
+
     try {
       if (editMode && selectedRecipe) {
-        await masterApi.updateRecipe(selectedRecipe.id, formData);
+        await masterApi.updateRecipe(selectedRecipe.id, payload);
         toast.success('Recipe updated');
       } else {
-        await masterApi.createRecipe(formData);
+        await masterApi.createRecipe(payload);
         toast.success('Recipe created');
       }
       setDialogOpen(false);
@@ -154,9 +139,8 @@ export const RecipesPage = () => {
     setFormData({
       product_id: recipe.product_id,
       name: recipe.name,
-      batch_size: recipe.batch_size,
-      batch_unit: recipe.batch_unit,
-      ingredients: recipe.ingredients || [],
+      batch_size: recipe.batch_size || 1,
+      batch_unit: recipe.batch_unit || 'EA',
       filling_components: recipe.filling_components || [],
       batch_yield_loss_percent: recipe.batch_yield_loss_percent,
       filling_yield_loss_percent: recipe.filling_yield_loss_percent,
@@ -260,32 +244,7 @@ export const RecipesPage = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-4 gap-4">
-                <div className="space-y-2">
-                  <Label>Batch Size *</Label>
-                  <Input
-                    type="number"
-                    value={formData.batch_size}
-                    onChange={(e) => setFormData({ ...formData, batch_size: parseFloat(e.target.value) || 0 })}
-                    data-testid="recipe-batch-size-input"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Batch Unit *</Label>
-                  <Select
-                    value={formData.batch_unit}
-                    onValueChange={(v) => setFormData({ ...formData, batch_unit: v })}
-                  >
-                    <SelectTrigger data-testid="recipe-batch-unit-select">
-                      <SelectValue placeholder="Unit" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {units.map((u) => (
-                        <SelectItem key={u.id} value={u.code}>{u.code}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Batch Loss %</Label>
                   <Input
@@ -307,64 +266,6 @@ export const RecipesPage = () => {
                   />
                 </div>
               </div>
-
-              {/* Ingredients */}
-              <Card className="border-slate-200">
-                <CardHeader className="py-2 px-4 border-b border-slate-100">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm">Batch Ingredients (Raw Materials)</CardTitle>
-                    <Button type="button" variant="outline" size="sm" onClick={addIngredient} data-testid="add-ingredient-btn">
-                      <Plus className="w-4 h-4 mr-1" /> Add
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="p-4 space-y-2">
-                  {formData.ingredients.length === 0 ? (
-                    <p className="text-sm text-slate-400 text-center py-4">No ingredients added</p>
-                  ) : (
-                    formData.ingredients.map((ing, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <Select
-                          value={ing.material_id}
-                          onValueChange={(v) => updateIngredient(idx, 'material_id', v)}
-                        >
-                          <SelectTrigger className="flex-1">
-                            <SelectValue placeholder="Select material" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {rawMaterials.map((m) => (
-                              <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Input
-                          type="number"
-                          className="w-24"
-                          placeholder="Qty"
-                          value={ing.quantity || ''}
-                          onChange={(e) => updateIngredient(idx, 'quantity', parseFloat(e.target.value) || 0)}
-                        />
-                        <Select
-                          value={ing.unit_of_measure}
-                          onValueChange={(v) => updateIngredient(idx, 'unit_of_measure', v)}
-                        >
-                          <SelectTrigger className="w-20">
-                            <SelectValue placeholder="Unit" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {units.map((u) => (
-                              <SelectItem key={u.id} value={u.code}>{u.code}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button type="button" variant="ghost" size="icon" onClick={() => removeIngredient(idx)}>
-                          <Trash2 className="w-4 h-4 text-red-500" />
-                        </Button>
-                      </div>
-                    ))
-                  )}
-                </CardContent>
-              </Card>
 
               {/* Filling Components */}
               <Card className="border-slate-200">
@@ -461,8 +362,6 @@ export const RecipesPage = () => {
                 <TableHead className="text-xs uppercase">Name</TableHead>
                 <TableHead className="text-xs uppercase">Product</TableHead>
                 <TableHead className="text-xs uppercase">Version</TableHead>
-                <TableHead className="text-xs uppercase">Batch Size</TableHead>
-                <TableHead className="text-xs uppercase">Ingredients</TableHead>
                 <TableHead className="text-xs uppercase">Packaging</TableHead>
                 <TableHead className="text-xs uppercase">Status</TableHead>
                 <TableHead className="text-xs uppercase">Actions</TableHead>
@@ -475,8 +374,6 @@ export const RecipesPage = () => {
                     <TableCell className="font-medium">{recipe.name}</TableCell>
                     <TableCell>{getProductName(recipe.product_id)}</TableCell>
                     <TableCell className="lot-number">{recipe.version}</TableCell>
-                    <TableCell>{recipe.batch_size} {recipe.batch_unit}</TableCell>
-                    <TableCell>{recipe.ingredients?.length || 0} items</TableCell>
                     <TableCell>{recipe.filling_components?.length || 0} items</TableCell>
                     <TableCell>
                       <Badge className={recipe.is_active ? 'status-available' : 'bg-gray-100 text-gray-800'}>
@@ -501,7 +398,7 @@ export const RecipesPage = () => {
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8">
+                  <TableCell colSpan={6} className="text-center py-8">
                     <ClipboardList className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No recipes found</p>
                   </TableCell>
