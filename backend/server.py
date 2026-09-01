@@ -2042,6 +2042,20 @@ def get_fill_weight_kg(product: Optional[dict]) -> Optional[float]:
     size_match = re.search(r'(\d+(?:\.\d+)?)\s*oz', f"{product.get('name', '')} {product.get('sku', '')}", re.IGNORECASE)
     return float(size_match.group(1)) * OZ_TO_KG if size_match else None
 
+async def get_wip_sibling_product_ids(product_id: str) -> List[str]:
+    """Product ids whose WIP is interchangeable with this product's.
+
+    A batch of WIP is bulk formula - unpackaged - so one batch of Hand Balm fills the
+    1oz, 2oz and 10oz sizes alike. Batching tags the WIP lot with the first product
+    linked to the formula, so a filling order for any other size has to look under its
+    siblings too, or the WIP is invisible to it."""
+    formulas = await db.formulas.find({"product_ids": product_id}, {"_id": 0}).to_list(100)
+    ids = {product_id}
+    for f in formulas:
+        ids.update(f.get("product_ids") or [])
+    return list(ids)
+
+
 @manufacturing_router.get("/filling-orders/{filling_id}/consumption-plan")
 async def get_filling_consumption_plan(filling_id: str, user: dict = Depends(get_current_user)):
     """Suggest WIP and packaging quantities to consume for a filling order, based on the
@@ -2063,7 +2077,7 @@ async def get_filling_consumption_plan(filling_id: str, user: dict = Depends(get
 
     wip_lots = await db.stock_snapshots.find({
         "item_type": "wip_batch",
-        "item_id": order["product_id"],
+        "item_id": {"$in": await get_wip_sibling_product_ids(order["product_id"])},
         "status": "Available"
     }, {"_id": 0}).to_list(1000)
 
@@ -2118,7 +2132,7 @@ async def consume_wip_for_filling(
     # where the finished goods end up, not where the WIP currently sits) - otherwise the
     # transaction lands on a snapshot that doesn't exist and silently vanishes.
     wip_snapshot = await db.stock_snapshots.find_one({
-        "item_id": order["product_id"],
+        "item_id": {"$in": await get_wip_sibling_product_ids(order["product_id"])},
         "item_type": "wip_batch",
         "lot_number": wip_lot_number,
         "status": "Available"
@@ -2126,9 +2140,11 @@ async def consume_wip_for_filling(
     if not wip_snapshot:
         raise HTTPException(status_code=404, detail=f"WIP lot {wip_lot_number} not found or not available")
 
-    # Create consumption transaction for WIP
+    # Issue against the lot's own item_id, not the order's product. One batch of WIP fills
+    # several sizes, so the lot is often tagged to a sibling product - issuing against the
+    # order's product would land on a snapshot that doesn't exist and silently vanish.
     transaction = InventoryTransactionCreate(
-        item_id=order["product_id"],
+        item_id=wip_snapshot["item_id"],
         item_type="wip_batch",
         lot_number=wip_lot_number,
         location_id=wip_snapshot["location_id"],
