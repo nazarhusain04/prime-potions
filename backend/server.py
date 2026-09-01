@@ -213,6 +213,7 @@ class ProductCreate(BaseModel):
     description: Optional[str] = ""
     unit_of_measure: str
     category: Optional[str] = ""
+    fill_weight_grams: Optional[float] = None  # real measured fill weight per unit, if known - overrides the label-based guess (e.g. "1oz" -> 28.3495g) used in Feasibility/Filling Order suggestions
 
 class ProductResponse(BaseModel):
     id: str
@@ -222,6 +223,7 @@ class ProductResponse(BaseModel):
     unit_of_measure: str
     category: str
     is_active: bool
+    fill_weight_grams: Optional[float] = None
 
 # Recipe / BOM
 class RecipeIngredient(BaseModel):
@@ -2026,6 +2028,20 @@ async def start_filling_order(filling_id: str, user: dict = Depends(require_role
     
     return {"message": "Filling order started", "status": "In Progress"}
 
+OZ_TO_KG = 0.0283495  # standard avoirdupois ounce; used only as a fallback guess
+
+def get_fill_weight_kg(product: Optional[dict]) -> Optional[float]:
+    """Real fill weight per unit if the Product has one set (grams, measured), else a
+    best-effort guess parsed from its size label (e.g. "1oz" -> 28.3495g). Used to
+    translate between KG of WIP/formula and finished units in Feasibility and Filling
+    Order suggestions - the real value is always preferred once someone records it."""
+    if not product:
+        return None
+    if product.get("fill_weight_grams"):
+        return product["fill_weight_grams"] / 1000
+    size_match = re.search(r'(\d+(?:\.\d+)?)\s*oz', f"{product.get('name', '')} {product.get('sku', '')}", re.IGNORECASE)
+    return float(size_match.group(1)) * OZ_TO_KG if size_match else None
+
 @manufacturing_router.get("/filling-orders/{filling_id}/consumption-plan")
 async def get_filling_consumption_plan(filling_id: str, user: dict = Depends(get_current_user)):
     """Suggest WIP and packaging quantities to consume for a filling order, based on the
@@ -2041,10 +2057,9 @@ async def get_filling_consumption_plan(filling_id: str, user: dict = Depends(get
 
     planned_qty = order["planned_quantity"]
 
-    # WIP side: parse fill size (e.g. "2oz") from the product to estimate KG of WIP needed
+    # WIP side: use the product's real fill weight if known, else fall back to a label-based guess
     product = await db.products.find_one({"id": order["product_id"]}, {"_id": 0})
-    size_match = re.search(r'(\d+(?:\.\d+)?)\s*oz', f"{product.get('name', '') if product else ''} {product.get('sku', '') if product else ''}", re.IGNORECASE)
-    fill_weight_kg = float(size_match.group(1)) * OZ_TO_KG if size_match else None
+    fill_weight_kg = get_fill_weight_kg(product)
 
     wip_lots = await db.stock_snapshots.find({
         "item_type": "wip_batch",
@@ -2308,8 +2323,6 @@ async def cancel_filling_order(filling_id: str, user: dict = Depends(require_rol
     return {"message": "Filling order cancelled and reversed", "affected_lots": len(affected)}
 
 # Feasibility Calculator
-OZ_TO_KG = 0.0283495  # standard avoirdupois ounce; used to translate KG-of-formula into finished units
-
 @manufacturing_router.get("/feasibility/{product_id}", response_model=FeasibilityResponse)
 async def calculate_feasibility(product_id: str, user: dict = Depends(get_current_user)):
     """Calculate max finished, packaged units of a product produceable right now,
@@ -2375,10 +2388,9 @@ async def calculate_feasibility(product_id: str, user: dict = Depends(get_curren
     if max_feasible_kg == float('inf'):
         max_feasible_kg = 0
 
-    # Translate KG-of-formula into finished units using the fill size parsed from the
-    # product's name/SKU (e.g. "2oz"). Best-effort - falls back to KG-only if unparseable.
-    size_match = re.search(r'(\d+(?:\.\d+)?)\s*oz', f"{product.get('name', '')} {product.get('sku', '')}", re.IGNORECASE)
-    fill_weight_kg = float(size_match.group(1)) * OZ_TO_KG if size_match else None
+    # Translate KG-of-formula into finished units using the product's real fill weight
+    # if known, else a best-effort guess from its size label (e.g. "2oz").
+    fill_weight_kg = get_fill_weight_kg(product)
     ingredient_max_units = (max_feasible_kg / fill_weight_kg) if fill_weight_kg else None
 
     # Packaging stage: check the product's filling BOM (Recipe.filling_components), if any

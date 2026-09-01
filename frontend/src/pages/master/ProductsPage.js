@@ -38,7 +38,8 @@ const emptyFormData = {
   name: '',
   description: '',
   unit_of_measure: '',
-  category: ''
+  category: '',
+  fill_weight_grams: ''
 };
 
 export const ProductsPage = () => {
@@ -77,12 +78,17 @@ export const ProductsPage = () => {
     e.preventDefault();
     setSaving(true);
 
+    const payload = {
+      ...formData,
+      fill_weight_grams: formData.fill_weight_grams === '' ? null : parseFloat(formData.fill_weight_grams)
+    };
+
     try {
       if (editMode && selectedProduct) {
-        await masterApi.updateProduct(selectedProduct.id, formData);
+        await masterApi.updateProduct(selectedProduct.id, payload);
         toast.success('Product updated');
       } else {
-        await masterApi.createProduct(formData);
+        await masterApi.createProduct(payload);
         toast.success('Product created');
       }
       setDialogOpen(false);
@@ -103,7 +109,8 @@ export const ProductsPage = () => {
       name: product.name,
       description: product.description || '',
       unit_of_measure: product.unit_of_measure,
-      category: product.category || ''
+      category: product.category || '',
+      fill_weight_grams: product.fill_weight_grams ?? ''
     });
     setSelectedProduct(product);
     setEditMode(true);
@@ -207,6 +214,19 @@ export const ProductsPage = () => {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="fill_weight">Fill Weight (grams)</Label>
+                <Input
+                  id="fill_weight"
+                  type="number"
+                  step="0.01"
+                  value={formData.fill_weight_grams}
+                  onChange={(e) => setFormData({ ...formData, fill_weight_grams: e.target.value })}
+                  placeholder="e.g. 28 - leave blank to estimate from the size in the name"
+                  data-testid="product-fill-weight-input"
+                />
+                <p className="text-xs text-slate-400">Real measured fill weight per unit, if you know it. Used to make Feasibility and Filling Order suggestions accurate instead of guessed from the product name.</p>
+              </div>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
                   Cancel
@@ -245,6 +265,7 @@ export const ProductsPage = () => {
                 <TableHead className="text-xs uppercase">Name</TableHead>
                 <TableHead className="text-xs uppercase">Category</TableHead>
                 <TableHead className="text-xs uppercase">Unit</TableHead>
+                <TableHead className="text-xs uppercase">Fill Weight</TableHead>
                 <TableHead className="text-xs uppercase">Status</TableHead>
                 <TableHead className="text-xs uppercase">Actions</TableHead>
               </TableRow>
@@ -257,6 +278,13 @@ export const ProductsPage = () => {
                     <TableCell className="font-medium">{product.name}</TableCell>
                     <TableCell>{product.category || '-'}</TableCell>
                     <TableCell>{product.unit_of_measure}</TableCell>
+                    <TableCell>
+                      {product.fill_weight_grams ? (
+                        <span>{product.fill_weight_grams}g</span>
+                      ) : (
+                        <span className="text-gray-400 text-sm" title="Estimated from the product name/size instead">est. from name</span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge className={product.is_active ? 'status-available' : 'bg-gray-100 text-gray-800'}>
                         {product.is_active ? 'Active' : 'Inactive'}
@@ -273,7 +301,7 @@ export const ProductsPage = () => {
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8">
+                  <TableCell colSpan={7} className="text-center py-8">
                     <Boxes className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No products found</p>
                   </TableCell>
