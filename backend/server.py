@@ -3811,10 +3811,105 @@ async def create_batching_workspace(
     
     await db.batching_workspace.insert_one(workspace)
     await broadcast_update("batch.updated", {"batch_code": batch_code, "status": "Planned"})
-    
+
     # Remove _id if MongoDB added it
     workspace.pop("_id", None)
     return workspace
+
+@batching_router.put("/workspace/{batch_id}")
+async def update_batching_workspace(batch_id: str, data: BatchingWorkspaceCreate, user: dict = Depends(require_roles(["Admin"]))):
+    """Edit a batching workspace entry. Before any real consumption has happened
+    (status still Planned), everything is editable and ingredients are recalculated
+    from the chosen formula. Once real stock has been consumed (status past Planned),
+    only notes and location can change - the formula/quantity are already reflected
+    in real inventory transactions and can't be silently rewritten."""
+    existing = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Batching workspace not found")
+
+    if existing["status"] != "Planned":
+        update_fields = {
+            "target_location_id": data.target_location_id,
+            "notes": data.notes or ""
+        }
+    else:
+        ingredients = []
+        formula_revision = ""
+        if data.formula_id:
+            formula = await db.formulas.find_one({"id": data.formula_id}, {"_id": 0})
+            if formula:
+                formula_revision = formula.get("description", "") or ""
+                lines = await db.formula_lines.find({"formula_id": data.formula_id}, {"_id": 0}).to_list(100)
+                for line in lines:
+                    rm = await find_raw_material(sku=line.get("raw_material_sku"))
+                    default_qty = line.get("default_qty_required", 0) or 0
+                    percent = line.get("percent", 0) or 0
+                    planned_qty = default_qty if default_qty > 0 else (percent / 100) * data.planned_qty
+                    ingredients.append({
+                        "sku": line.get("raw_material_sku"),
+                        "name": rm.get("name") if rm else line.get("raw_material_sku"),
+                        "phase": line.get("phase", ""),
+                        "percent": percent,
+                        "planned_qty": planned_qty,
+                        "uom": line.get("uom", "KG"),
+                        "add_order": line.get("add_order", ""),
+                        "process_notes": line.get("process_notes", ""),
+                        "batch_notes": line.get("batch_notes", "")
+                    })
+        update_fields = {
+            "formula_id": data.formula_id,
+            "formula_name": data.formula_name,
+            "formula_revision": formula_revision,
+            "planned_qty": data.planned_qty,
+            "batch_unit": data.batch_unit,
+            "target_location_id": data.target_location_id,
+            "notes": data.notes or "",
+            "ingredients": ingredients
+        }
+
+    result = await db.batching_workspace.find_one_and_update(
+        {"id": batch_id},
+        {"$set": update_fields},
+        return_document=True
+    )
+    await create_audit_log(user["id"], "update", "batching_workspace", batch_id, update_fields)
+    await broadcast_update("batch.updated", {"batch_code": result["batch_code"], "status": result["status"]})
+    result.pop("_id", None)
+    return result
+
+@batching_router.delete("/workspace/{batch_id}")
+async def delete_batching_workspace(batch_id: str, user: dict = Depends(require_roles(["Admin"]))):
+    """Delete a batching workspace entry, reversing any real consumption it caused
+    (raw materials given back, WIP removed) by deleting its ledger transactions and
+    recomputing stock from what's left - same pattern as cancelling a filling order.
+    Blocked if this batch's WIP has already been consumed by a Filling Order, since
+    reversing it then would corrupt that downstream record."""
+    existing = await db.batching_workspace.find_one({"id": batch_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Batching workspace not found")
+
+    wip_lot_number = existing.get("wip_lot_number")
+    if wip_lot_number:
+        downstream = await db.filling_consumptions.find_one({"material_type": "wip_batch", "lot_number": wip_lot_number})
+        if downstream:
+            raise HTTPException(status_code=400, detail="This batch's WIP has already been used in a Filling Order - cancel that Filling Order first")
+
+    txns = await db.inventory_transactions.find(
+        {"reference_type": "batching_workspace", "reference_id": batch_id}, {"_id": 0}
+    ).to_list(1000)
+    affected = {(t["item_id"], t["item_type"], t["lot_number"], t["location_id"]) for t in txns}
+
+    await db.inventory_transactions.delete_many({"reference_type": "batching_workspace", "reference_id": batch_id})
+    await db.batching_consumptions.delete_many({"batch_id": batch_id})
+    await db.batching_workspace.delete_one({"id": batch_id})
+
+    for item_id, item_type, lot_number, location_id in affected:
+        await update_stock_snapshot(item_id, item_type, lot_number, location_id)
+
+    await create_audit_log(user["id"], "delete", "batching_workspace", batch_id, {"batch_code": existing["batch_code"]})
+    await broadcast_update("batch.updated", {"batch_code": existing["batch_code"], "status": "Deleted"})
+
+    return {"message": "Batch deleted and reversed", "affected_lots": len(affected)}
 
 @batching_router.get("/workspace/{batch_id}")
 async def get_batching_workspace(batch_id: str, user: dict = Depends(get_current_user)):
@@ -4182,6 +4277,18 @@ async def update_formula(formula_id: str, data: FormulaCreate, user: dict = Depe
     if not result:
         raise HTTPException(status_code=404, detail="Formula not found")
     return {k: v for k, v in result.items() if k != "_id"}
+
+@formulas_router.delete("/{formula_id}")
+async def delete_formula(formula_id: str, user: dict = Depends(require_roles(["Admin"]))):
+    """Delete a formula and its ingredient lines. Past batches keep their own frozen
+    copy of the ingredients and revision code, so deleting a formula doesn't change
+    what already-made batches show - it just removes it from being used for new ones."""
+    result = await db.formulas.delete_one({"id": formula_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Formula not found")
+    await db.formula_lines.delete_many({"formula_id": formula_id})
+    await create_audit_log(user["id"], "delete", "formula", formula_id, {})
+    return {"message": "Formula deleted"}
 
 @formulas_router.get("/{formula_id}")
 async def get_formula(formula_id: str, user: dict = Depends(get_current_user)):

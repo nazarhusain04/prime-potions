@@ -13,18 +13,32 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Combobox } from '../../components/ui/combobox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../components/ui/dialog';
 import { toast } from 'sonner';
-import { Package, Loader2, CheckCircle } from 'lucide-react';
+import { Package, Loader2, CheckCircle, Plus } from 'lucide-react';
+
+const emptyNewMaterial = { sku: '', name: '', unit_of_measure: '', category: '' };
 
 export const ReceivePage = () => {
   const navigate = useNavigate();
   const [rawMaterials, setRawMaterials] = useState([]);
   const [packagingMaterials, setPackagingMaterials] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [units, setUnits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
-  
+  const [addMaterialOpen, setAddMaterialOpen] = useState(false);
+  const [newMaterial, setNewMaterial] = useState(emptyNewMaterial);
+  const [creatingMaterial, setCreatingMaterial] = useState(false);
+
   const [formData, setFormData] = useState({
     item_type: 'raw_material',
     item_id: '',
@@ -33,25 +47,53 @@ export const ReceivePage = () => {
     lot_number: ''
   });
 
+  const fetchData = async () => {
+    try {
+      const [rmRes, pkgRes, locRes, unitsRes] = await Promise.all([
+        masterApi.listRawMaterials(),
+        masterApi.listPackagingMaterials(),
+        masterApi.listLocations(),
+        masterApi.listUnits()
+      ]);
+      setRawMaterials(rmRes.data);
+      setPackagingMaterials(pkgRes.data);
+      setLocations(locRes.data);
+      setUnits(unitsRes.data);
+    } catch (error) {
+      toast.error('Failed to load data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [rmRes, pkgRes, locRes] = await Promise.all([
-          masterApi.listRawMaterials(),
-          masterApi.listPackagingMaterials(),
-          masterApi.listLocations()
-        ]);
-        setRawMaterials(rmRes.data);
-        setPackagingMaterials(pkgRes.data);
-        setLocations(locRes.data);
-      } catch (error) {
-        toast.error('Failed to load data');
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchData();
   }, []);
+
+  const handleCreateMaterial = async (e) => {
+    e.preventDefault();
+    setCreatingMaterial(true);
+    try {
+      const payload = {
+        sku: newMaterial.sku,
+        name: newMaterial.name,
+        unit_of_measure: newMaterial.unit_of_measure,
+        category: newMaterial.category
+      };
+      const created = formData.item_type === 'raw_material'
+        ? await masterApi.createRawMaterial(payload)
+        : await masterApi.createPackagingMaterial(payload);
+      toast.success(`${formData.item_type === 'raw_material' ? 'Raw material' : 'Packaging material'} created`);
+      await fetchData();
+      setFormData({ ...formData, item_id: created.data.id });
+      setAddMaterialOpen(false);
+      setNewMaterial(emptyNewMaterial);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to create material');
+    } finally {
+      setCreatingMaterial(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -130,14 +172,26 @@ export const ReceivePage = () => {
               </div>
 
               <div className="space-y-2">
-                <Label>Material *</Label>
+                <div className="flex items-center justify-between">
+                  <Label>Material *</Label>
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    className="h-auto p-0 text-xs gap-1"
+                    onClick={() => { setNewMaterial(emptyNewMaterial); setAddMaterialOpen(true); }}
+                    data-testid="add-new-material-btn"
+                  >
+                    <Plus className="w-3 h-3" /> New material
+                  </Button>
+                </div>
                 <Combobox
                   data-testid="receive-material-select"
                   value={formData.item_id}
                   onValueChange={(v) => setFormData({ ...formData, item_id: v })}
                   placeholder="Select material"
                   searchPlaceholder="Search by name or SKU..."
-                  emptyText="No material found."
+                  emptyText="Not found - use 'New material' above to add it."
                   options={materials.map((m) => ({
                     value: m.id,
                     label: `${m.name} (${m.sku}) - ${m.unit_of_measure}`
@@ -232,6 +286,75 @@ export const ReceivePage = () => {
           </Card>
         )}
       </div>
+
+      <Dialog open={addMaterialOpen} onOpenChange={setAddMaterialOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New {formData.item_type === 'raw_material' ? 'Raw Material' : 'Packaging Material'}</DialogTitle>
+            <DialogDescription>
+              Add a material that hasn't been received before. It'll be selected automatically once created.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleCreateMaterial} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>SKU *</Label>
+                <Input
+                  value={newMaterial.sku}
+                  onChange={(e) => setNewMaterial({ ...newMaterial, sku: e.target.value })}
+                  placeholder={formData.item_type === 'raw_material' ? 'OIL999' : 'PKG-999'}
+                  required
+                  data-testid="new-material-sku-input"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Category</Label>
+                <Input
+                  value={newMaterial.category}
+                  onChange={(e) => setNewMaterial({ ...newMaterial, category: e.target.value })}
+                  placeholder="Optional"
+                  data-testid="new-material-category-input"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Name *</Label>
+              <Input
+                value={newMaterial.name}
+                onChange={(e) => setNewMaterial({ ...newMaterial, name: e.target.value })}
+                placeholder="Material name"
+                required
+                data-testid="new-material-name-input"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Unit of Measure *</Label>
+              <Select
+                value={newMaterial.unit_of_measure}
+                onValueChange={(v) => setNewMaterial({ ...newMaterial, unit_of_measure: v })}
+              >
+                <SelectTrigger data-testid="new-material-unit-select">
+                  <SelectValue placeholder="Select unit" />
+                </SelectTrigger>
+                <SelectContent>
+                  {units.map((u) => (
+                    <SelectItem key={u.id} value={u.code}>{u.name} ({u.code})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setAddMaterialOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" className="btn-primary" disabled={creatingMaterial || !newMaterial.unit_of_measure} data-testid="save-new-material-btn">
+                {creatingMaterial && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Create &amp; Select
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -215,6 +215,17 @@ export const FormulasPage = () => {
     }
   };
 
+  const handleDeleteFormula = async (formula) => {
+    if (!confirm(`Delete formula "${formula.name}"? Past batches keep their own copy of the ingredients and won't be affected, but this recipe won't be usable for new batches anymore.`)) return;
+    try {
+      await api.delete(`/formulas/${formula.id}`);
+      toast.success('Formula deleted');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete formula');
+    }
+  };
+
   const handleDeleteLine = async (lineId) => {
     if (!confirm('Delete this ingredient line?')) return;
     try {
@@ -685,13 +696,22 @@ export const FormulasPage = () => {
                           Lines
                         </Button>
                         {isAdmin && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleEditFormula(formula)}
-                          >
-                            <Edit className="w-4 h-4" />
-                          </Button>
+                          <>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleEditFormula(formula)}
+                            >
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleDeleteFormula(formula)}
+                            >
+                              <Trash2 className="w-4 h-4 text-red-400" />
+                            </Button>
+                          </>
                         )}
                       </div>
                     </TableCell>

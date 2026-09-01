@@ -31,24 +31,38 @@ import {
 } from '../components/ui/select';
 import { Combobox } from '../components/ui/combobox';
 import { toast } from 'sonner';
-import { 
-  Plus, 
-  Download, 
-  Upload, 
-  Factory, 
-  Play, 
+import {
+  Plus,
+  Download,
+  Upload,
+  Factory,
+  Play,
   CheckCircle,
   AlertTriangle,
   Shield,
   FileSpreadsheet,
   Loader2,
   RefreshCw,
-  Eye
+  Eye,
+  Edit,
+  Trash2
 } from 'lucide-react';
 import api from '../lib/api';
 import { cn, formatNumber, formatDate, getStatusColor } from '../lib/utils';
+import { useAuth } from '../contexts/AuthContext';
+
+const emptyBatchFormData = {
+  formula_id: '',
+  formula_name: '',
+  planned_qty: '',
+  batch_unit: 'KG',
+  target_location_id: '',
+  notes: ''
+};
 
 export const BatchingWorkspacePage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
   const [workspaces, setWorkspaces] = useState([]);
   const [formulas, setFormulas] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -59,15 +73,10 @@ export const BatchingWorkspacePage = () => {
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
+  const [editMode, setEditMode] = useState(false);
+  const [editingWorkspace, setEditingWorkspace] = useState(null);
 
-  const [formData, setFormData] = useState({
-    formula_id: '',
-    formula_name: '',
-    planned_qty: '',
-    batch_unit: 'KG',
-    target_location_id: '',
-    notes: ''
-  });
+  const [formData, setFormData] = useState(emptyBatchFormData);
 
   const fetchData = useCallback(async () => {
     try {
@@ -95,15 +104,50 @@ export const BatchingWorkspacePage = () => {
     setSaving(true);
 
     try {
-      await api.post('/batching/workspace', formData);
-      toast.success('Batching workspace created');
+      if (editMode && editingWorkspace) {
+        await api.put(`/batching/workspace/${editingWorkspace.id}`, formData);
+        toast.success('Batch updated');
+      } else {
+        await api.post('/batching/workspace', formData);
+        toast.success('Batching workspace created');
+      }
       setDialogOpen(false);
-      setFormData({ formula_id: '', formula_name: '', planned_qty: '', batch_unit: 'KG', target_location_id: '', notes: '' });
+      setFormData(emptyBatchFormData);
+      setEditMode(false);
+      setEditingWorkspace(null);
       fetchData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create workspace');
+      toast.error(error.response?.data?.detail || 'Failed to save workspace');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleEditWorkspace = (workspace) => {
+    setFormData({
+      formula_id: workspace.formula_id || '',
+      formula_name: workspace.formula_name || '',
+      planned_qty: workspace.planned_qty,
+      batch_unit: workspace.batch_unit || 'KG',
+      target_location_id: workspace.target_location_id || '',
+      notes: workspace.notes || ''
+    });
+    setEditingWorkspace(workspace);
+    setEditMode(true);
+    setDialogOpen(true);
+  };
+
+  const handleDeleteWorkspace = async (workspace) => {
+    const warning = workspace.status === 'Planned'
+      ? `Delete batch ${workspace.batch_code}? Nothing has been consumed yet, so this is a clean delete.`
+      : `Delete batch ${workspace.batch_code}? This already consumed real raw material stock and produced WIP lot ${workspace.wip_lot_number || ''} - deleting will reverse both (materials given back, WIP removed). This can't be undone.`;
+    if (!confirm(warning)) return;
+    try {
+      await api.delete(`/batching/workspace/${workspace.id}`);
+      toast.success('Batch deleted and reversed');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete batch');
     }
   };
 
@@ -193,6 +237,7 @@ export const BatchingWorkspacePage = () => {
   });
 
   const getLocationName = (id) => locations.find(l => l.id === id)?.name || 'Unknown';
+  const lockedForEdit = editMode && editingWorkspace?.status !== 'Planned';
 
   if (loading) {
     return (
@@ -214,18 +259,24 @@ export const BatchingWorkspacePage = () => {
             <RefreshCw className="w-4 h-4" />
             Refresh
           </Button>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) { setEditMode(false); setEditingWorkspace(null); setFormData(emptyBatchFormData); } }}>
             <DialogTrigger asChild>
-              <Button className="btn-primary gap-2" data-testid="create-batch-btn">
+              <Button
+                className="btn-primary gap-2"
+                data-testid="create-batch-btn"
+                onClick={() => { setEditMode(false); setEditingWorkspace(null); setFormData(emptyBatchFormData); }}
+              >
                 <Plus className="w-4 h-4" />
                 New Batch
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Create Batching Workspace</DialogTitle>
+                <DialogTitle>{editMode ? `Edit Batch ${editingWorkspace?.batch_code || ''}` : 'Create Batching Workspace'}</DialogTitle>
                 <DialogDescription>
-                  Plan a new batch production. You can link to a formula or enter manually.
+                  {editMode && editingWorkspace?.status !== 'Planned'
+                    ? 'This batch already consumed real stock, so only location and notes can be changed here.'
+                    : 'Plan a new batch production. You can link to a formula or enter manually.'}
                 </DialogDescription>
               </DialogHeader>
               <form onSubmit={handleCreateWorkspace} className="space-y-4">
@@ -233,11 +284,12 @@ export const BatchingWorkspacePage = () => {
                   <Label>Formula (Optional)</Label>
                   <Select
                     value={formData.formula_id || 'none'}
+                    disabled={lockedForEdit}
                     onValueChange={(v) => {
                       const actualValue = v === 'none' ? '' : v;
                       const formula = formulas.find(f => f.id === actualValue);
-                      setFormData({ 
-                        ...formData, 
+                      setFormData({
+                        ...formData,
                         formula_id: actualValue,
                         formula_name: formula?.name || formData.formula_name,
                         batch_unit: formula?.batch_unit || formData.batch_unit
@@ -263,6 +315,7 @@ export const BatchingWorkspacePage = () => {
                     onChange={(e) => setFormData({ ...formData, formula_name: e.target.value })}
                     placeholder="e.g., Paume Sanitizer Mist - 185KG"
                     required
+                    disabled={lockedForEdit}
                     data-testid="formula-name-input"
                   />
                 </div>
@@ -277,6 +330,7 @@ export const BatchingWorkspacePage = () => {
                       onChange={(e) => setFormData({ ...formData, planned_qty: e.target.value })}
                       placeholder="185"
                       required
+                      disabled={lockedForEdit}
                       data-testid="planned-qty-input"
                     />
                     {(() => {
@@ -307,6 +361,7 @@ export const BatchingWorkspacePage = () => {
                     <Label>Unit</Label>
                     <Select
                       value={formData.batch_unit}
+                      disabled={lockedForEdit}
                       onValueChange={(v) => setFormData({ ...formData, batch_unit: v })}
                     >
                       <SelectTrigger data-testid="batch-unit-select">
@@ -350,7 +405,7 @@ export const BatchingWorkspacePage = () => {
                   </Button>
                   <Button type="submit" className="btn-primary" disabled={saving} data-testid="save-batch-btn">
                     {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                    Create Workspace
+                    {editMode ? 'Save Changes' : 'Create Workspace'}
                   </Button>
                 </DialogFooter>
               </form>
@@ -559,6 +614,27 @@ export const BatchingWorkspacePage = () => {
                           >
                             <Shield className="w-3 h-3 mr-1" /> Release
                           </Button>
+                        )}
+
+                        {isAdmin && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleEditWorkspace(workspace)}
+                              data-testid={`edit-batch-${workspace.batch_code}`}
+                            >
+                              <Edit className="w-3 h-3" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleDeleteWorkspace(workspace)}
+                              data-testid={`delete-batch-${workspace.batch_code}`}
+                            >
+                              <Trash2 className="w-3 h-3 text-red-400" />
+                            </Button>
+                          </>
                         )}
                       </div>
                     </TableCell>
