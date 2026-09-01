@@ -2030,6 +2030,10 @@ async def start_filling_order(filling_id: str, user: dict = Depends(require_role
 
 OZ_TO_KG = 0.0283495  # standard avoirdupois ounce; used only as a fallback guess
 
+# How far above the theoretical yield a filling order may still be completed. Fill weights
+# vary unit to unit, so a little over is real; a lot over means a typo or missed consumption.
+FILL_OVERPRODUCTION_TOLERANCE = 0.10
+
 def get_fill_weight_kg(product: Optional[dict]) -> Optional[float]:
     """Real fill weight per unit if the Product has one set (grams, measured), else a
     best-effort guess parsed from its size label (e.g. "1oz" -> 28.3495g). Used to
@@ -2251,6 +2255,43 @@ async def complete_filling_order(
         raise HTTPException(status_code=400, detail="Record WIP and packaging consumption before completing - finished goods can't be produced without consuming real inventory")
 
     product = await db.products.find_one({"id": order["product_id"]}, {"_id": 0})
+
+    # Finished units can't exceed what the WIP actually consumed could physically fill.
+    # Losing material on the line (spillage, rejects, line clear) is normal, so producing
+    # FEWER units than theoretical is never blocked - only claiming more than the WIP can
+    # make, which means a typo or WIP that was never recorded as consumed.
+    wip_txns = await db.inventory_transactions.find({
+        "reference_type": "filling_order",
+        "reference_id": filling_id,
+        "item_type": "wip_batch"
+    }, {"_id": 0}).to_list(1000)
+
+    wip_by_uom = {}
+    for t in wip_txns:
+        uom = (t.get("unit_of_measure") or "").upper()
+        wip_by_uom[uom] = wip_by_uom.get(uom, 0) + abs(t.get("quantity", 0))
+
+    max_units, basis = None, ""
+    if wip_by_uom:
+        fill_weight_kg = get_fill_weight_kg(product)
+        kg = wip_by_uom.get("KG", 0)
+        ea = wip_by_uom.get("EA", 0)
+        if kg > 0 and fill_weight_kg:
+            max_units = kg / fill_weight_kg
+            basis = f"{kg:g} KG of WIP at {fill_weight_kg * 1000:g} g per unit fills about {max_units:,.0f}"
+        elif ea > 0:
+            # Legacy batch orders track WIP in units rather than KG - one WIP unit, one filled unit.
+            max_units = ea
+            basis = f"only {ea:,.0f} units of WIP were consumed"
+
+    if max_units is not None and actual_quantity > max_units * (1 + FILL_OVERPRODUCTION_TOLERANCE):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Can't produce {actual_quantity:,.0f} units - {basis}. "
+                "Consume more WIP first, or correct the quantity."
+            )
+        )
 
     # Create finished goods lot
     fg_lot_number = await generate_lot_number("FG")
