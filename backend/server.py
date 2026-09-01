@@ -3766,9 +3766,11 @@ async def create_batching_workspace(
     
     # Get formula ingredients if formula exists
     ingredients = []
+    formula_revision = ""
     if data.formula_id:
         formula = await db.formulas.find_one({"id": data.formula_id}, {"_id": 0})
         if formula:
+            formula_revision = formula.get("description", "") or ""
             lines = await db.formula_lines.find({"formula_id": data.formula_id}, {"_id": 0}).to_list(100)
             for line in lines:
                 rm = await find_raw_material(sku=line.get("raw_material_sku"))
@@ -3794,6 +3796,7 @@ async def create_batching_workspace(
         "batch_code": batch_code,
         "formula_id": data.formula_id,
         "formula_name": data.formula_name,
+        "formula_revision": formula_revision,
         "planned_qty": data.planned_qty,
         "actual_qty": None,
         "batch_unit": data.batch_unit,
@@ -3856,6 +3859,7 @@ async def download_batching_sheet(batch_id: str, user: dict = Depends(get_curren
         "batch_code": workspace["batch_code"],
         "product_name": workspace["formula_name"],
         "formula_name": workspace["formula_name"],
+        "formula_revision": workspace.get("formula_revision", ""),
         "planned_qty": workspace["planned_qty"],
         "batch_unit": workspace["batch_unit"],
         "batch_date": workspace["created_at"][:10] if workspace.get("created_at") else datetime.now(timezone.utc).strftime("%Y-%m-%d")

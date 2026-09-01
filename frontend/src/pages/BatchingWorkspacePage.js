@@ -466,8 +466,11 @@ export const BatchingWorkspacePage = () => {
                 workspaces.map((workspace) => (
                   <TableRow key={workspace.id} className="hover:bg-slate-50">
                     <TableCell className="lot-number">{workspace.batch_code}</TableCell>
-                    <TableCell className="font-medium max-w-[200px] truncate" title={workspace.formula_name}>
-                      {workspace.formula_name}
+                    <TableCell className="max-w-[200px] truncate" title={workspace.formula_name}>
+                      <p className="font-medium">{workspace.formula_name}</p>
+                      {workspace.formula_revision && (
+                        <p className="text-xs text-slate-400">{workspace.formula_revision}</p>
+                      )}
                     </TableCell>
                     <TableCell>{getLocationName(workspace.target_location_id)}</TableCell>
                     <TableCell className="text-right">{formatNumber(workspace.planned_qty, 2)} {workspace.batch_unit}</TableCell>

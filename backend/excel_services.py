@@ -321,7 +321,10 @@ class PrimePotionsExcelService:
         # Title rows (1-3)
         ws_batch.cell(row=1, column=1, value=f"BATCH: {batch_info.get('batch_code', '')}")
         ws_batch.cell(row=1, column=1).font = Font(bold=True, size=14)
-        ws_batch.cell(row=2, column=1, value=f"Product: {batch_info.get('product_name', batch_info.get('formula_name', ''))}")
+        product_line = f"Product: {batch_info.get('product_name', batch_info.get('formula_name', ''))}"
+        if batch_info.get('formula_revision'):
+            product_line += f" ({batch_info['formula_revision']})"
+        ws_batch.cell(row=2, column=1, value=product_line)
         ws_batch.cell(row=2, column=3, value=f"Target Size: {batch_info.get('planned_qty', '')} {batch_info.get('batch_unit', 'KG')}")
         ws_batch.cell(row=3, column=1, value=f"Date: {batch_info.get('batch_date', datetime.now().strftime('%Y-%m-%d'))}")
         note_cell = ws_batch.cell(
