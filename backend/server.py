@@ -3781,7 +3781,7 @@ async def create_batching_workspace(
                 planned_qty = default_qty if default_qty > 0 else (percent / 100) * data.planned_qty
                 ingredients.append({
                     "sku": line.get("raw_material_sku"),
-                    "name": rm.get("name") if rm else line.get("raw_material_sku"),
+                    "name": rm.get("name") if rm else (line.get("ingredient_display_name") or line.get("raw_material_sku")),
                     "phase": line.get("phase", ""),
                     "percent": percent,
                     "planned_qty": planned_qty,
@@ -3847,7 +3847,7 @@ async def update_batching_workspace(batch_id: str, data: BatchingWorkspaceCreate
                     planned_qty = default_qty if default_qty > 0 else (percent / 100) * data.planned_qty
                     ingredients.append({
                         "sku": line.get("raw_material_sku"),
-                        "name": rm.get("name") if rm else line.get("raw_material_sku"),
+                        "name": rm.get("name") if rm else (line.get("ingredient_display_name") or line.get("raw_material_sku")),
                         "phase": line.get("phase", ""),
                         "percent": percent,
                         "planned_qty": planned_qty,

@@ -292,13 +292,23 @@ export const FormulasPage = () => {
                 />
               </div>
               
-              <div className="space-y-2">
-                <Label>Category</Label>
-                <Input
-                  value={formData.category}
-                  onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                  placeholder="e.g., Sanitizers"
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Category</Label>
+                  <Input
+                    value={formData.category}
+                    onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                    placeholder="e.g., Sanitizers"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Client</Label>
+                  <Input
+                    value={(formData.tags || [])[0] || ''}
+                    onChange={(e) => setFormData({ ...formData, tags: e.target.value ? [e.target.value] : [] })}
+                    placeholder="e.g., Paume, Plantd"
+                  />
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -642,6 +652,7 @@ export const FormulasPage = () => {
             <TableHeader>
               <TableRow className="bg-slate-50">
                 <TableHead>Name</TableHead>
+                <TableHead>Client</TableHead>
                 <TableHead>Category</TableHead>
                 <TableHead>Linked Products</TableHead>
                 <TableHead>Default Size</TableHead>
@@ -655,6 +666,17 @@ export const FormulasPage = () => {
                 formulas.map((formula) => (
                   <TableRow key={formula.id} className="hover:bg-slate-50">
                     <TableCell className="font-medium">{formula.name}</TableCell>
+                    <TableCell>
+                      {(formula.tags || []).length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {formula.tags.map((tag) => (
+                            <Badge key={tag} variant="outline" className="bg-slate-50">{tag}</Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400 text-sm">-</span>
+                      )}
+                    </TableCell>
                     <TableCell>{formula.category || '-'}</TableCell>
                     <TableCell>
                       {(formula.product_ids || []).length > 0 ? (
@@ -719,7 +741,7 @@ export const FormulasPage = () => {
                 ))
               ) : (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8">
+                  <TableCell colSpan={8} className="text-center py-8">
                     <ClipboardList className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                     <p className="text-sm text-slate-500">No formulas defined yet</p>
                     <p className="text-xs text-slate-400 mt-1">Formulas are optional - you can batch without them</p>
