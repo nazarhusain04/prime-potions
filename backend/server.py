@@ -1046,6 +1046,46 @@ async def update_packaging_material(material_id: str, data: PackagingMaterialCre
     await create_audit_log(user["id"], "update", "packaging_material", material_id, data.model_dump())
     return PackagingMaterialResponse(**_item_to_packaging_material(result))
 
+@master_router.delete("/packaging-materials/{material_id}")
+async def delete_packaging_material(material_id: str, user: dict = Depends(require_roles(["Admin"]))):
+    """Remove a packaging material that was never really used.
+
+    Refused once it has any stock, any ledger history, or any BOM pointing at it - a
+    material that appears in past transactions has to keep existing, or traceability on
+    those lots loses the name of what was consumed."""
+    material = (await db.packaging_materials.find_one({"id": material_id}, {"_id": 0})
+                or await db.items.find_one({"id": material_id, "type": "PACK"}, {"_id": 0}))
+    if not material:
+        raise HTTPException(status_code=404, detail="Packaging material not found")
+
+    txn_count = await db.inventory_transactions.count_documents({"item_id": material_id})
+    if txn_count:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{material.get('name', 'This material')} has {txn_count} inventory transactions and can't be deleted - traceability on those lots depends on it. Mark it inactive instead."
+        )
+
+    snapshot = await db.stock_snapshots.find_one({"item_id": material_id})
+    if snapshot:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{material.get('name', 'This material')} still has stock recorded. Issue or correct it to zero first."
+        )
+
+    used_by = await db.recipes.find_one(
+        {"is_active": True, "filling_components.material_id": material_id}, {"_id": 0}
+    )
+    if used_by:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Still used by the BOM '{used_by.get('name')}'. Remove that line first."
+        )
+
+    await db.packaging_materials.delete_one({"id": material_id})
+    await db.items.delete_one({"id": material_id, "type": "PACK"})
+    await create_audit_log(user["id"], "delete", "packaging_material", material_id, {"sku": material.get("sku"), "name": material.get("name")})
+    return {"message": f"{material.get('name', 'Packaging material')} deleted"}
+
 # Products (Finished Goods)
 @master_router.post("/products", response_model=ProductResponse)
 async def create_product(data: ProductCreate, user: dict = Depends(require_roles(["Admin"]))):

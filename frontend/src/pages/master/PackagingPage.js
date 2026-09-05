@@ -30,7 +30,7 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Search, Package, Loader2, Edit } from 'lucide-react';
+import { Plus, Search, Package, Loader2, Edit, Trash2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 const emptyFormData = {
@@ -110,6 +110,21 @@ export const PackagingPage = () => {
     setSelectedMaterial(material);
     setEditMode(true);
     setDialogOpen(true);
+  };
+
+  const handleDeleteMaterial = async (material) => {
+    if (!window.confirm(
+      `Delete "${material.name}"?\n\n` +
+      `This only works for a material that was never used - anything with stock, ledger ` +
+      `history or a BOM line pointing at it is refused, so past traceability stays intact.`
+    )) return;
+    try {
+      await masterApi.deletePackagingMaterial(material.id);
+      toast.success(`${material.name} deleted`);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete');
+    }
   };
 
   const filteredMaterials = materials.filter(m =>
@@ -280,9 +295,20 @@ export const PackagingPage = () => {
                     </TableCell>
                     <TableCell>
                       {isAdmin && (
-                        <Button size="sm" variant="ghost" onClick={() => handleEditMaterial(material)}>
-                          <Edit className="w-4 h-4" />
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button size="sm" variant="ghost" onClick={() => handleEditMaterial(material)}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-red-600 hover:text-red-700"
+                            onClick={() => handleDeleteMaterial(material)}
+                            data-testid="delete-packaging-btn"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
                       )}
                     </TableCell>
                   </TableRow>

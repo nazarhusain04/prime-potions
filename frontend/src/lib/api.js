@@ -101,6 +101,7 @@ export const masterApi = {
   getPackagingMaterial: (id) => api.get(`/master/packaging-materials/${id}`),
   createPackagingMaterial: (data) => api.post('/master/packaging-materials', data),
   updatePackagingMaterial: (id, data) => api.put(`/master/packaging-materials/${id}`, data),
+  deletePackagingMaterial: (id) => api.delete(`/master/packaging-materials/${id}`),
 
   // Products
   listProducts: () => api.get('/master/products'),
