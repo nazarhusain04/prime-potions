@@ -55,7 +55,6 @@ export const RecipesPage = () => {
   const [products, setProducts] = useState([]);
   const [rawMaterials, setRawMaterials] = useState([]);
   const [packagingMaterials, setPackagingMaterials] = useState([]);
-  const [units, setUnits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -66,18 +65,16 @@ export const RecipesPage = () => {
 
   const fetchData = async () => {
     try {
-      const [recipesRes, productsRes, rmRes, pkgRes, unitsRes] = await Promise.all([
+      const [recipesRes, productsRes, rmRes, pkgRes] = await Promise.all([
         masterApi.listRecipes(),
         masterApi.listProducts(),
         masterApi.listRawMaterials(),
-        masterApi.listPackagingMaterials(),
-        masterApi.listUnits()
+        masterApi.listPackagingMaterials()
       ]);
       setRecipes(recipesRes.data);
       setProducts(productsRes.data);
       setRawMaterials(rmRes.data);
       setPackagingMaterials(pkgRes.data);
-      setUnits(unitsRes.data);
     } catch (error) {
       toast.error('Failed to load data');
     } finally {
@@ -89,10 +86,18 @@ export const RecipesPage = () => {
     fetchData();
   }, []);
 
+  // A BOM line is stored as packaging-per-unit, so a box holding 100 tubes is 0.01. Nobody
+  // should have to type that - and 1 per 120 would be 0.008333333, where a slipped digit
+  // quietly mis-consumes packaging on every order. So the form asks the question the way
+  // the floor thinks about it ("one box holds 100") and does the division itself.
+  const packModeOf = (qty) => (qty > 0 && qty < 1 ? 'holds' : 'per_unit');
+  const packValueOf = (qty) =>
+    packModeOf(qty) === 'holds' ? Math.round(1 / qty) : qty;
+
   const addFillingComponent = () => {
     setFormData({
       ...formData,
-      filling_components: [...formData.filling_components, { material_id: '', material_type: 'packaging_material', quantity: 0, unit_of_measure: '' }]
+      filling_components: [...formData.filling_components, { material_id: '', material_type: 'packaging_material', quantity: 0, unit_of_measure: '', pack_mode: 'per_unit', pack_value: 1 }]
     });
   };
 
@@ -105,7 +110,20 @@ export const RecipesPage = () => {
 
   const updateFillingComponent = (index, field, value) => {
     const newComponents = [...formData.filling_components];
-    newComponents[index][field] = value;
+    newComponents[index] = { ...newComponents[index], [field]: value };
+
+    // The unit belongs to the material itself, so take it from there rather than asking again
+    if (field === 'material_id') {
+      const mat = packagingMaterials.find((m) => m.id === value);
+      if (mat) newComponents[index].unit_of_measure = mat.unit_of_measure || 'EA';
+    }
+
+    // Keep the stored per-unit quantity in step with whichever way the line is being entered
+    if (field === 'pack_mode' || field === 'pack_value') {
+      const c = newComponents[index];
+      const v = parseFloat(c.pack_value) || 0;
+      c.quantity = c.pack_mode === 'holds' ? (v > 0 ? 1 / v : 0) : v;
+    }
     setFormData({ ...formData, filling_components: newComponents });
   };
 
@@ -113,7 +131,13 @@ export const RecipesPage = () => {
     e.preventDefault();
     setSaving(true);
 
-    const payload = { ...formData, ingredients: [] };
+    // pack_mode/pack_value are only how the form asks the question - the recipe stores
+    // the per-unit quantity they work out to.
+    const payload = {
+      ...formData,
+      ingredients: [],
+      filling_components: formData.filling_components.map(({ pack_mode, pack_value, ...c }) => c)
+    };
 
     try {
       if (editMode && selectedRecipe) {
@@ -141,7 +165,11 @@ export const RecipesPage = () => {
       name: recipe.name,
       batch_size: recipe.batch_size || 1,
       batch_unit: recipe.batch_unit || 'EA',
-      filling_components: recipe.filling_components || [],
+      filling_components: (recipe.filling_components || []).map((c) => ({
+        ...c,
+        pack_mode: packModeOf(c.quantity),
+        pack_value: packValueOf(c.quantity)
+      })),
       batch_yield_loss_percent: recipe.batch_yield_loss_percent,
       filling_yield_loss_percent: recipe.filling_yield_loss_percent,
       version: recipe.version
@@ -282,43 +310,54 @@ export const RecipesPage = () => {
                     <p className="text-sm text-slate-400 text-center py-4">No components added</p>
                   ) : (
                     formData.filling_components.map((comp, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <Select
-                          value={comp.material_id}
-                          onValueChange={(v) => updateFillingComponent(idx, 'material_id', v)}
-                        >
-                          <SelectTrigger className="flex-1">
-                            <SelectValue placeholder="Select packaging" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {packagingMaterials.map((m) => (
-                              <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Input
-                          type="number"
-                          className="w-24"
-                          placeholder="Qty"
-                          value={comp.quantity || ''}
-                          onChange={(e) => updateFillingComponent(idx, 'quantity', parseFloat(e.target.value) || 0)}
-                        />
-                        <Select
-                          value={comp.unit_of_measure}
-                          onValueChange={(v) => updateFillingComponent(idx, 'unit_of_measure', v)}
-                        >
-                          <SelectTrigger className="w-20">
-                            <SelectValue placeholder="Unit" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {units.map((u) => (
-                              <SelectItem key={u.id} value={u.code}>{u.code}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button type="button" variant="ghost" size="icon" onClick={() => removeFillingComponent(idx)}>
-                          <Trash2 className="w-4 h-4 text-red-500" />
-                        </Button>
+                      <div key={idx} className="space-y-1 pb-2 border-b border-slate-100 last:border-0">
+                        <div className="flex items-center gap-2">
+                          <Select
+                            value={comp.material_id}
+                            onValueChange={(v) => updateFillingComponent(idx, 'material_id', v)}
+                          >
+                            <SelectTrigger className="flex-1">
+                              <SelectValue placeholder="Select packaging" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {packagingMaterials.map((m) => (
+                                <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select
+                            value={comp.pack_mode || 'per_unit'}
+                            onValueChange={(v) => updateFillingComponent(idx, 'pack_mode', v)}
+                          >
+                            <SelectTrigger className="w-44" data-testid="pack-mode-select">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="per_unit">each unit needs</SelectItem>
+                              <SelectItem value="holds">one of these holds</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Input
+                            type="number"
+                            step="any"
+                            min="0"
+                            className="w-24"
+                            placeholder={comp.pack_mode === 'holds' ? 'e.g. 100' : 'e.g. 1'}
+                            value={comp.pack_value ?? ''}
+                            onChange={(e) => updateFillingComponent(idx, 'pack_value', e.target.value)}
+                            data-testid="pack-value-input"
+                          />
+                          <Button type="button" variant="ghost" size="icon" onClick={() => removeFillingComponent(idx)}>
+                            <Trash2 className="w-4 h-4 text-red-500" />
+                          </Button>
+                        </div>
+                        {comp.quantity > 0 && (
+                          <p className="text-xs text-slate-400 pl-1">
+                            {comp.pack_mode === 'holds'
+                              ? `1 for every ${Math.round(1 / comp.quantity)} units - a 500 unit order uses ${(500 * comp.quantity).toFixed(2).replace(/\.?0+$/, '')}`
+                              : `${comp.quantity} per unit - a 500 unit order uses ${500 * comp.quantity}`}
+                          </p>
+                        )}
                       </div>
                     ))
                   )}
