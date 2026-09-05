@@ -13,8 +13,25 @@ import {
   SelectValue,
 } from '../../components/ui/select';
 import { Combobox } from '../../components/ui/combobox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../components/ui/dialog';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '../../components/ui/table';
 import { toast } from 'sonner';
-import { MinusCircle, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
+import { MinusCircle, Loader2, CheckCircle, AlertTriangle, Edit, Trash2 } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
 
 const emptyForm = {
   item_type: 'raw_material',
@@ -26,7 +43,21 @@ const emptyForm = {
   notes: ''
 };
 
+// Quantities are summed across a ledger, so trim the floating-point tail before showing
+// them - an operator should see 25.29 kg, not 25.290000000000003.
+const fmtQty = (n) => {
+  if (n === null || n === undefined || n === '') return '';
+  const v = Number(n);
+  return Number.isFinite(v) ? String(Number(v.toFixed(6))) : String(n);
+};
+
 export const IssueStockPage = () => {
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole('Admin');
+  const [history, setHistory] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [editForm, setEditForm] = useState({ quantity: '', notes: '' });
+  const [savingEdit, setSavingEdit] = useState(false);
   const [rawMaterials, setRawMaterials] = useState([]);
   const [packagingMaterials, setPackagingMaterials] = useState([]);
   const [reasons, setReasons] = useState([]);
@@ -35,6 +66,15 @@ export const IssueStockPage = () => {
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
   const [formData, setFormData] = useState(emptyForm);
+
+  const loadHistory = async () => {
+    try {
+      const res = await inventoryApi.listTransactions({ reference_type: 'adjustment', limit: 25 });
+      setHistory(res.data.filter((t) => t.reference_type === 'adjustment'));
+    } catch (error) {
+      setHistory([]);
+    }
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -47,6 +87,7 @@ export const IssueStockPage = () => {
         setRawMaterials(rmRes.data);
         setPackagingMaterials(pkgRes.data);
         setReasons(reasonRes.data);
+        await loadHistory();
       } catch (error) {
         toast.error('Failed to load data');
       } finally {
@@ -55,6 +96,39 @@ export const IssueStockPage = () => {
     };
     load();
   }, []);
+
+  const handleEdit = async (e) => {
+    e.preventDefault();
+    setSavingEdit(true);
+    try {
+      await inventoryApi.updateTransaction(editing.id, {
+        quantity: Math.abs(parseFloat(editForm.quantity)),
+        notes: editForm.notes
+      });
+      toast.success('Entry corrected');
+      setEditing(null);
+      await loadHistory();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleDelete = async (tx) => {
+    const label = reasons.find((r) => r.code === tx.reason)?.label || tx.reason || 'adjustment';
+    if (!window.confirm(
+      `Remove this ${label} of ${fmtQty(Math.abs(tx.quantity))} ${tx.unit_of_measure} from lot ${tx.lot_number}?\n\n` +
+      `The stock will go back to what it was before this entry.`
+    )) return;
+    try {
+      await inventoryApi.deleteTransaction(tx.id);
+      toast.success('Entry removed and stock restored');
+      await loadHistory();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to remove');
+    }
+  };
 
   // Stock leaves a specific lot, not a material in general - so the lot list has to
   // reload whenever the chosen material changes.
@@ -100,6 +174,7 @@ export const IssueStockPage = () => {
       setResult(res.data);
       toast.success(res.data.message);
       setFormData({ ...formData, quantity: '', notes: '', lot_number: '' });
+      await loadHistory();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to record');
     } finally {
@@ -174,12 +249,12 @@ export const IssueStockPage = () => {
                   emptyText="No stock available for this material."
                   options={lots.map((l) => ({
                     value: l.lot_number,
-                    label: `${l.lot_number} - ${l.quantity_available} ${l.unit_of_measure || ''}`
+                    label: `${l.lot_number} - ${fmtQty(l.quantity_available)} ${l.unit_of_measure || ''}`
                   }))}
                 />
                 {selectedLot && (
                   <p className="text-xs text-slate-400">
-                    {selectedLot.quantity_available} {selectedLot.unit_of_measure} available in this lot
+                    {fmtQty(selectedLot.quantity_available)} {selectedLot.unit_of_measure} available in this lot
                   </p>
                 )}
               </div>
@@ -269,10 +344,10 @@ export const IssueStockPage = () => {
                 <p className="text-sm text-emerald-700">{result.message}</p>
                 <p className="text-sm">
                   Lot <span className="lot-number font-bold">{result.lot_number}</span> changed by{' '}
-                  <span className="font-bold">{result.quantity}</span>
+                  <span className="font-bold">{fmtQty(result.quantity)}</span>
                 </p>
                 <p className="text-sm text-emerald-700">
-                  Remaining in lot: <span className="font-bold">{result.remaining}</span>
+                  Remaining in lot: <span className="font-bold">{fmtQty(result.remaining)}</span>
                 </p>
               </CardContent>
             </Card>
@@ -319,6 +394,132 @@ export const IssueStockPage = () => {
           </Card>
         </div>
       </div>
+
+      <Card className="border-slate-200">
+        <CardHeader className="py-3 px-4 border-b border-slate-100">
+          <div className="flex items-center gap-4">
+            <CardTitle className="text-base">Recent adjustments</CardTitle>
+            <Badge variant="secondary">{history.length}</Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-slate-50">
+                  <TableHead className="text-xs uppercase">Date</TableHead>
+                  <TableHead className="text-xs uppercase">Lot</TableHead>
+                  <TableHead className="text-xs uppercase">Reason</TableHead>
+                  <TableHead className="text-xs uppercase">Quantity</TableHead>
+                  <TableHead className="text-xs uppercase">Notes</TableHead>
+                  {isAdmin && <TableHead className="text-xs uppercase">Actions</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {history.length > 0 ? (
+                  history.map((tx) => (
+                    <TableRow key={tx.id} className="hover:bg-slate-50">
+                      <TableCell className="text-sm text-slate-500 whitespace-nowrap">
+                        {new Date(tx.created_at).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell className="lot-number">{tx.lot_number}</TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className="font-normal">
+                          {reasons.find((r) => r.code === tx.reason)?.label || tx.reason || '-'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className={tx.quantity < 0 ? 'text-red-600' : 'text-emerald-700'}>
+                        {fmtQty(tx.quantity)} {tx.unit_of_measure}
+                      </TableCell>
+                      <TableCell className="text-sm text-slate-500">{tx.notes || '-'}</TableCell>
+                      {isAdmin && (
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setEditing(tx);
+                                setEditForm({ quantity: String(Math.abs(tx.quantity)), notes: tx.notes || '' });
+                              }}
+                              data-testid="edit-adjustment-btn"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-red-600 hover:text-red-700"
+                              onClick={() => handleDelete(tx)}
+                              data-testid="delete-adjustment-btn"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={isAdmin ? 6 : 5} className="text-center py-8">
+                      <p className="text-sm text-slate-500">Nothing recorded yet</p>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={!!editing} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Correct this entry</DialogTitle>
+            <DialogDescription>
+              {editing && (
+                <>
+                  Lot <span className="lot-number">{editing.lot_number}</span> - stock is recalculated from
+                  the ledger after saving.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleEdit} className="space-y-4">
+            <div className="space-y-2">
+              <Label>Quantity *</Label>
+              <Input
+                type="number"
+                step="0.001"
+                min="0"
+                value={editForm.quantity}
+                onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })}
+                required
+                data-testid="edit-adjustment-quantity"
+              />
+              <p className="text-xs text-slate-400">
+                Enter the amount as a positive number - the direction stays as it was recorded.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Input
+                value={editForm.notes}
+                onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                data-testid="edit-adjustment-notes"
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
+              <Button type="submit" className="btn-primary" disabled={savingEdit} data-testid="save-adjustment-btn">
+                {savingEdit && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Save
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

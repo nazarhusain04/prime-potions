@@ -508,7 +508,18 @@ async def update_stock_snapshot(item_id: str, item_type: str, lot_number: str, l
         elif s == "Reserved":
             quantity_reserved += qty
         status = s
-    
+
+    # Summing floats across a long ledger leaves artefacts - a lot drawn to empty lands on
+    # 6.1e-16 rather than 0, and 25.29 reads as 25.290000000000003 on screen. Round to the
+    # milligram, which is finer than anything weighed here, so stored stock stays clean.
+    quantity_on_hand = round(quantity_on_hand, 6)
+    quantity_available = round(quantity_available, 6)
+    quantity_reserved = round(quantity_reserved, 6)
+
+    # Anything left below that threshold is rounding dust, not stock - treat the lot as empty.
+    if abs(quantity_on_hand) < 1e-6:
+        quantity_on_hand = 0
+
     if quantity_on_hand > 0:
         await db.stock_snapshots.update_one(
             {
@@ -1323,6 +1334,7 @@ async def list_inventory_transactions(
     item_type: Optional[str] = None,
     lot_number: Optional[str] = None,
     location_id: Optional[str] = None,
+    reference_type: Optional[str] = None,
     limit: int = Query(500, le=10000),
     user: dict = Depends(get_current_user)
 ):
@@ -1335,6 +1347,8 @@ async def list_inventory_transactions(
         query["lot_number"] = lot_number
     if location_id:
         query["location_id"] = location_id
+    if reference_type:
+        query["reference_type"] = reference_type
 
     transactions = await db.inventory_transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return [InventoryTransactionResponse(**t) for t in transactions]
