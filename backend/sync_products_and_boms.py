@@ -19,14 +19,14 @@ from pymongo import MongoClient, UpdateOne
 # Only these products get synced. Add a SKU here once its BOM has been checked against
 # the real packaging - pack ratios and packaging SKUs both.
 SKUS_TO_SYNC = [
-    "HBG-1OZ",  # Paume Hand Balm 1oz - BOM verified against real specs
+    "HBG-1OZ",  # Paume Hand Balm 1oz - tube + 9x8x8 box of 100, confirmed
+    "HBG-2OZ",  # Paume Hand Balm 2oz - tube + 6x6x6 of 12 + 24x18x14 master of 24, confirmed
 ]
 
 # Left out on purpose. Their BOMs were filled in with assumed pack ratios and, in places,
 # assumed packaging materials. On live they would drive Feasibility and deduct real
 # packaging stock from numbers nobody confirmed. Move a SKU up once it is checked.
 SKUS_PENDING_VERIFICATION = [
-    "HBG-2OZ",     # Paume - inner carton 1/24, outer box 1/96 assumed
     "HBG-10OZ",    # Paume - jar/lid/label split and 1/12, 1/48 assumed
     "PFS101-2OZ",  # Plantd Facial Scrub  - jar, metal lid, 2 labels, 1/24, 1/96 assumed
     "FCS101-1OZ",  # Plantd Facial Serum  - dropper bottle, cap, label, 1/24, 1/96 assumed
