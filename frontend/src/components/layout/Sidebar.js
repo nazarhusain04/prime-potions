@@ -19,7 +19,8 @@ import {
   ChevronRight,
   FileSpreadsheet,
   Beaker,
-  Wand2
+  Wand2,
+  MinusCircle
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import logo from '../../assets/logo.png';
@@ -70,7 +71,8 @@ const menuItems = [
       { label: 'Overview', path: '/inventory/overview', icon: Boxes },
       { label: 'Stock by Lot', path: '/inventory/stock', icon: Boxes },
       { label: 'Transactions', path: '/inventory/transactions', icon: FileText },
-      { label: 'Receive', path: '/inventory/receive', icon: Package }
+      { label: 'Receive', path: '/inventory/receive', icon: Package },
+      { label: 'Issue Stock', path: '/inventory/issue', icon: MinusCircle }
     ]
   },
   {

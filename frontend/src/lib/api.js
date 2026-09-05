@@ -126,6 +126,8 @@ export const inventoryApi = {
   deleteTransaction: (id) => api.delete(`/inventory/transactions/${id}`),
   receive: (params) => api.post('/inventory/receive', null, { params }),
   transfer: (data) => api.post('/inventory/transfer', data),
+  getIssueReasons: () => api.get('/inventory/issue-reasons'),
+  issue: (data) => api.post('/inventory/issue', data),
 };
 
 // Manufacturing API

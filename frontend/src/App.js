@@ -25,6 +25,7 @@ import { UnitsPage } from './pages/master/UnitsPage';
 import { StockPage } from './pages/inventory/StockPage';
 import { TransactionsPage } from './pages/inventory/TransactionsPage';
 import { ReceivePage } from './pages/inventory/ReceivePage';
+import { IssueStockPage } from './pages/inventory/IssueStockPage';
 import { InventoryOverviewPage } from './pages/inventory/InventoryOverviewPage';
 
 // Manufacturing
@@ -76,6 +77,7 @@ function App() {
                 <Route path="/inventory/stock" element={<StockPage />} />
                 <Route path="/inventory/transactions" element={<TransactionsPage />} />
                 <Route path="/inventory/receive" element={<ReceivePage />} />
+                <Route path="/inventory/issue" element={<IssueStockPage />} />
                 
                 {/* Traceability */}
                 <Route path="/traceability" element={<TraceabilityPage />} />

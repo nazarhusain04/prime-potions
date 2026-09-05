@@ -298,6 +298,30 @@ class InventoryTransferRequest(BaseModel):
     quantity: float
     notes: Optional[str] = ""
 
+# Stock leaves the building for reasons other than production - lab work, QA retains,
+# samples, spillage. Without a way to record those, book stock drifts above physical
+# stock and every reconciliation gets worse. COUNT_CORRECTION is the only reason that
+# may also add stock, for when a physical count finds more than the books say.
+ISSUE_REASONS = {
+    "lab_use": "Lab / R&D use",
+    "qc_sample": "QC sample",
+    "client_sample": "Sample to client",
+    "waste": "Waste / spillage",
+    "damaged": "Damaged",
+    "expired": "Expired",
+    "count_correction": "Count correction",
+}
+
+class InventoryIssueRequest(BaseModel):
+    item_id: str
+    item_type: str
+    lot_number: str
+    location_id: str
+    quantity: float
+    reason: str
+    direction: str = "out"  # "in" is only valid for a count correction
+    notes: Optional[str] = ""
+
 class InventoryTransactionResponse(BaseModel):
     id: str
     item_id: str
@@ -309,6 +333,7 @@ class InventoryTransactionResponse(BaseModel):
     unit_of_measure: str
     reference_type: Optional[str] = None
     reference_id: Optional[str] = None
+    reason: Optional[str] = None  # set on adjustments - why stock left outside production
     status: Optional[str] = "Available"
     notes: Optional[str] = ""
     created_at: str
@@ -1712,6 +1737,103 @@ async def receive_inventory(
     
     result = await create_inventory_transaction(transaction, user)
     return {"lot_number": lot_number, "transaction": result}
+
+@inventory_router.get("/issue-reasons")
+async def list_issue_reasons(user: dict = Depends(get_current_user)):
+    """Reasons stock can leave outside of production, for the Issue Stock form."""
+    return [
+        {"code": code, "label": label, "can_add_stock": code == "count_correction"}
+        for code, label in ISSUE_REASONS.items()
+    ]
+
+@inventory_router.post("/issue")
+async def issue_inventory(
+    data: InventoryIssueRequest,
+    user: dict = Depends(require_roles(["Admin", "Warehouse", "Production", "QA"]))
+):
+    """Take stock out of a lot for something other than production - lab work, a QA
+    retain, a customer sample, spillage - or correct a lot after a physical count.
+
+    Issued against a specific lot on purpose: if that lot is ever recalled, the 2 kg that
+    went to the lab has to be as traceable as the 200 kg that went into a batch."""
+    if data.reason not in ISSUE_REASONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown reason '{data.reason}'. Expected one of: {', '.join(ISSUE_REASONS)}"
+        )
+    if data.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
+    if data.direction not in ("out", "in"):
+        raise HTTPException(status_code=400, detail="Direction must be 'out' or 'in'")
+    if data.direction == "in" and data.reason != "count_correction":
+        raise HTTPException(
+            status_code=400,
+            detail="Only a count correction can add stock back - every other reason takes stock out"
+        )
+
+    snapshot = await db.stock_snapshots.find_one({
+        "item_id": data.item_id,
+        "item_type": data.item_type,
+        "lot_number": data.lot_number,
+        "location_id": data.location_id
+    }, {"_id": 0})
+    if not snapshot:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Lot {data.lot_number} has no stock at that location"
+        )
+
+    available = snapshot.get("quantity_available", 0)
+    # Blocked for every role, Admin included. Issuing more than exists is always a data
+    # error, and a physical count that came out higher is what a count correction is for.
+    if data.direction == "out" and data.quantity > available:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Lot {data.lot_number} only has {available:g} {snapshot.get('unit_of_measure', '')} available. "
+                "If a physical count says otherwise, record a count correction first."
+            )
+        )
+
+    signed_qty = data.quantity if data.direction == "in" else -data.quantity
+    transaction = {
+        "id": generate_id(),
+        "item_id": data.item_id,
+        "item_type": data.item_type,
+        "lot_number": data.lot_number,
+        "location_id": data.location_id,
+        "transaction_type": "receive" if data.direction == "in" else "issue",
+        "quantity": signed_qty,
+        "unit_of_measure": snapshot.get("unit_of_measure", "EA"),
+        "reference_type": "adjustment",
+        "reference_id": data.reason,
+        "reason": data.reason,
+        "status": snapshot.get("status", "Available"),
+        "notes": data.notes or ISSUE_REASONS[data.reason],
+        "created_at": get_timestamp(),
+        "created_by": user["id"]
+    }
+    await db.inventory_transactions.insert_one(transaction)
+    transaction.pop("_id", None)
+
+    await update_stock_snapshot(data.item_id, data.item_type, data.lot_number, data.location_id)
+    await broadcast_update("inventory.updated", {"item_id": data.item_id, "lot_number": data.lot_number})
+    await create_audit_log(user["id"], "issue", "inventory_transaction", transaction["id"], data.model_dump())
+
+    updated = await db.stock_snapshots.find_one({
+        "item_id": data.item_id,
+        "item_type": data.item_type,
+        "lot_number": data.lot_number,
+        "location_id": data.location_id
+    }, {"_id": 0})
+
+    return {
+        "message": f"{ISSUE_REASONS[data.reason]} recorded",
+        "lot_number": data.lot_number,
+        "quantity": signed_qty,
+        "remaining": (updated or {}).get("quantity_available", 0),
+        "transaction_id": transaction["id"],
+    }
 
 @inventory_router.post("/transfer")
 async def transfer_inventory(
